@@ -27,7 +27,7 @@ export interface ChatResponse {
   sources: ChatSource[];
 }
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? ""; // empty → same-origin /api via Next rewrite
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, init);
@@ -46,9 +46,9 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listCaptures: () => http<Capture[]>("/captures"),
+  listCaptures: () => http<Capture[]>("/api/captures"),
   createText: (content: string) =>
-    http<Capture>("/captures/text", {
+    http<Capture>("/api/captures/text", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
@@ -57,18 +57,18 @@ export const api = {
     const fd = new FormData();
     fd.append("file", file);
     const qs = documentGroupId !== undefined ? `?document_group_id=${documentGroupId}` : "";
-    return http<Capture>(`/captures/file${qs}`, { method: "POST", body: fd });
+    return http<Capture>(`/api/captures/file${qs}`, { method: "POST", body: fd });
   },
   update: (id: number, content: string) =>
-    http<Capture>(`/captures/${id}`, {
+    http<Capture>(`/api/captures/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
     }),
-  remove: (id: number) => http<void>(`/captures/${id}`, { method: "DELETE" }),
-  history: (groupId: number) => http<Capture[]>(`/captures/history/${groupId}`),
+  remove: (id: number) => http<void>(`/api/captures/${id}`, { method: "DELETE" }),
+  history: (groupId: number) => http<Capture[]>(`/api/captures/history/${groupId}`),
   chat: (query: string, includeHistory = false) =>
-    http<ChatResponse>("/chat", {
+    http<ChatResponse>("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, include_history: includeHistory }),
