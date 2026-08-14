@@ -21,10 +21,21 @@ export interface ChatSource {
   snippet: string;
 }
 
+export interface StructuredField {
+  key: string;
+  value: string;
+}
+
+export interface StructuredAnswer {
+  kind: "fields" | "prose";
+  fields: StructuredField[];
+}
+
 export interface ChatResponse {
   answer: string;
   found: boolean;
   sources: ChatSource[];
+  structured?: StructuredAnswer | null;
 }
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? ""; // empty → same-origin /api via Next rewrite

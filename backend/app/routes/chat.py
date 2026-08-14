@@ -2,18 +2,31 @@ from fastapi import APIRouter, HTTPException
 
 from .. import db
 from ..config import settings
+from ..retrieval import vector
 from ..retrieval.chat import grounded_answer
-from ..retrieval.fts import search
-from ..schemas import ChatRequest, ChatResponse, ChatSource
+from ..retrieval.fts import search as fts_search
+from ..retrieval.fusion import fuse
+from ..schemas import (
+    ChatRequest,
+    ChatResponse,
+    ChatSource,
+    StructuredAnswer,
+    StructuredField,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("", response_model=ChatResponse)
 def chat(payload: ChatRequest):
-    hits = search(payload.query, include_old_versions=payload.include_history)
+    fts_hits = fts_search(payload.query, limit=10, include_old_versions=payload.include_history)
     try:
-        answer, found = grounded_answer(payload.query, hits)
+        vector_hits = vector.search(payload.query, limit=10, include_old_versions=payload.include_history)
+    except Exception:
+        vector_hits = []
+    hits = fuse(fts_hits, vector_hits, limit=5)
+    try:
+        answer, found, structured = grounded_answer(payload.query, hits)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -34,4 +47,12 @@ def chat(payload: ChatRequest):
         answer=answer,
         found=found,
         sources=[ChatSource(capture_id=h["capture_id"], snippet=h["snippet"]) for h in hits],
+        structured=(
+            StructuredAnswer(
+                kind=structured["kind"],
+                fields=[StructuredField(**f) for f in structured["fields"]],
+            )
+            if structured
+            else None
+        ),
     )

@@ -49,7 +49,18 @@ class ChatSource(BaseModel):
     snippet: str
 
 
+class StructuredField(BaseModel):
+    key: str
+    value: str
+
+
+class StructuredAnswer(BaseModel):
+    kind: Literal["fields", "prose"]
+    fields: list[StructuredField] = []
+
+
 class ChatResponse(BaseModel):
     answer: str
     found: bool
     sources: list[ChatSource]
+    structured: Optional[StructuredAnswer] = None

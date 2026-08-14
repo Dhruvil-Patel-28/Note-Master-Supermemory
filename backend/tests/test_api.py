@@ -89,14 +89,13 @@ def test_delete_capture_cascades_to_fts(client):
 
 
 def test_edit_capture_reindexes(client):
+    from app.retrieval.fts import search as fts_search
+
     cap = create_text(client, "meeting with Ravi about project alpha")
-    r = client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
-    assert r.status_code == 200, r.text
-    wait_indexed(client, r.json())
-    r = client.post("/chat", json={"query": "Priya"})
-    assert any(s["capture_id"] == cap["id"] for s in r.json()["sources"])
-    r = client.post("/chat", json={"query": "Ravi"})
-    assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
+    client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
+    wait_indexed(client, {"id": cap["id"]})
+    assert any(h["capture_id"] == cap["id"] for h in fts_search("Priya"))
+    assert all(h["capture_id"] != cap["id"] for h in fts_search("Ravi"))
 
 
 def test_grounded_not_found(client):
@@ -116,6 +115,89 @@ def test_grounded_answer_with_citation(client):
     assert body["found"] is True
     assert "ABCDE1234F" in body["answer"]
     assert body["sources"]
+
+
+def test_structured_fields_answer(client):
+    create_text(client, "My PAN number is ABCDE1234F issued in my name")
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "What is my PAN number?"})
+        assert r.status_code == 200
+        body = r.json()
+        if body["structured"] and body["structured"]["kind"] == "fields":
+            break
+    assert body["structured"] is not None
+    assert body["structured"]["kind"] == "fields"
+    assert body["structured"]["fields"], "expected extracted fields"
+    keys = [f["key"].lower() for f in body["structured"]["fields"]]
+    assert any("pan" in k for k in keys)
+
+
+def test_structured_prose_answer(client):
+    create_text(client, "Goa trip was in December with friends")
+    r = client.post("/chat", json={"query": "Where did I go in December?"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["found"] is True
+    assert body["structured"]["kind"] in ("fields", "prose")
+
+
+def test_vector_search_recall(client):
+    create_text(client, "I love running along Marine Drive at sunrise")
+    r = client.post("/chat", json={"query": "jogging near the sea in the morning"})
+    assert r.status_code == 200
+    assert any("Marine Drive" in s["snippet"] for s in r.json()["sources"])
+
+
+def test_vector_search_excludes_old_versions(client, tmp_path):
+    p = tmp_path / "plan.txt"
+    p.write_text("road trip planned to the mountains this summer")
+    v1 = upload_file(client, p)
+    p.write_text("road trip planned to the beaches this summer")
+    v2 = upload_file(client, p, document_group_id=v1["document_group_id"])
+    r = client.post("/chat", json={"query": "summer vacation destination"})
+    assert v1["id"] not in [s["capture_id"] for s in r.json()["sources"]]
+    assert v2["id"] in [s["capture_id"] for s in r.json()["sources"]]
+
+
+def test_delete_capture_cascades_chunks(client):
+    from app.db import get_conn
+
+    cap = create_text(client, "electricity bill amount 3500 rupees")
+    with get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM capture_chunks WHERE capture_id = ?", (cap["id"],)).fetchone()[0]
+    assert n >= 1
+    with get_conn() as conn:
+        nv = conn.execute(
+            "SELECT COUNT(*) FROM chunks_vec v JOIN capture_chunks ch ON ch.id = v.rowid WHERE ch.capture_id = ?",
+            (cap["id"],),
+        ).fetchone()[0]
+    assert nv == n
+    client.delete(f"/captures/{cap['id']}")
+    with get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM capture_chunks WHERE capture_id = ?", (cap["id"],)).fetchone()[0]
+        nv = conn.execute(
+            "SELECT COUNT(*) FROM chunks_vec v JOIN capture_chunks ch ON ch.id = v.rowid WHERE ch.capture_id = ?",
+            (cap["id"],),
+        ).fetchone()[0]
+    assert n == 0 and nv == 0
+
+
+def test_edit_reindexes_chunks(client):
+    from app.db import get_conn
+
+    cap = create_text(client, "meeting with Ravi about project alpha")
+    with get_conn() as conn:
+        old = conn.execute(
+            "SELECT text FROM capture_chunks WHERE capture_id = ?", (cap["id"],)
+        ).fetchone()["text"]
+    client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
+    wait_indexed(client, {"id": cap["id"]})
+    with get_conn() as conn:
+        new = conn.execute(
+            "SELECT text FROM capture_chunks WHERE capture_id = ?", (cap["id"],)
+        ).fetchone()["text"]
+    assert old != new and "Priya" in new
 
 
 def test_file_upload_docx(client, tmp_path):

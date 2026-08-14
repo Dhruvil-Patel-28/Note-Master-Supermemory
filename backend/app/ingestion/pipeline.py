@@ -1,7 +1,26 @@
 from pathlib import Path
 
 from .. import db, storage
+from .chunker import chunk_text
+from .embeddings import embed_texts
 from .ocr import extract_doc
+
+
+def _write_chunks(conn, capture_id: int, content: str) -> None:
+    conn.execute("DELETE FROM capture_chunks WHERE capture_id = ?", (capture_id,))
+    chunks = chunk_text(content)
+    if not chunks:
+        return
+    embeddings = embed_texts(chunks)
+    for i, (text, embedding) in enumerate(zip(chunks, embeddings)):
+        cur = conn.execute(
+            "INSERT INTO capture_chunks (capture_id, chunk_index, text) VALUES (?, ?, ?)",
+            (capture_id, i, text),
+        )
+        conn.execute(
+            "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
+            (cur.lastrowid, str(embedding)),
+        )
 
 
 def create_capture(
@@ -72,3 +91,4 @@ def _extract_and_index(capture_id: int) -> None:
             "INSERT INTO captures_fts (rowid, content) VALUES (?, ?)",
             (capture_id, content),
         )
+        _write_chunks(conn, capture_id, content)

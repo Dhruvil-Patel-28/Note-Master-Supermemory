@@ -97,6 +97,10 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
 def delete_capture(capture_id: int):
     row = _get_capture(capture_id)
     with db.get_conn() as conn:
+        conn.execute(
+            "DELETE FROM chunks_vec WHERE rowid IN (SELECT id FROM capture_chunks WHERE capture_id = ?)",
+            (capture_id,),
+        )
         conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
         conn.execute("DELETE FROM captures WHERE id = ?", (capture_id,))
         if row["document_group_id"] is not None:

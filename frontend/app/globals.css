@@ -280,6 +280,24 @@ button:disabled {
   margin-top: 4px;
 }
 
+.msg-card {
+  margin-top: 8px;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.msg-card td {
+  padding: 4px 8px;
+  border: 1px solid var(--pane-border);
+}
+
+.msg-card td:first-child {
+  color: var(--muted);
+  white-space: nowrap;
+  font-weight: 600;
+}
+
 .msg-sources {
   list-style: none;
   display: flex;

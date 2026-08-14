@@ -8,6 +8,7 @@ interface Message {
   text: string;
   found?: boolean;
   sources?: ChatResponse["sources"];
+  structured?: ChatResponse["structured"];
 }
 
 export default function ChatPane() {
@@ -35,7 +36,13 @@ export default function ChatPane() {
       const res = await api.chat(q);
       setMessages((m) => [
         ...m,
-        { role: "assistant", text: res.answer, found: res.found, sources: res.sources },
+        {
+          role: "assistant",
+          text: res.answer,
+          found: res.found,
+          sources: res.sources,
+          structured: res.structured ?? undefined,
+        },
       ]);
     } catch (e) {
       setMessages((m) => [
@@ -53,6 +60,18 @@ export default function ChatPane() {
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.role}`}>
             <div className="msg-text">{m.text}</div>
+            {m.structured?.kind === "fields" && m.structured.fields.length > 0 && (
+              <table className="msg-card">
+                <tbody>
+                  {m.structured.fields.map((f, i) => (
+                    <tr key={i}>
+                      <td>{f.key}</td>
+                      <td>{f.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
             {m.role === "assistant" && m.found === false && (
               <div className="msg-note">No grounded answer — check your captures.</div>
             )}
