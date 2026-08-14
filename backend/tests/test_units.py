@@ -183,3 +183,65 @@ class TestPin:
         assert not pin.token_valid(None)
         pin.clear_pin()
         assert not pin.token_valid(token)
+
+
+class TestOcrRouting:
+    def test_image_routes_to_ocr_and_raises_when_disabled(self, tmp_path):
+        from app.ingestion.ocr import extract_doc
+
+        img = tmp_path / "scan.png"
+        img.write_bytes(b"fake png bytes")
+        with pytest.raises(ValueError, match="OCR is disabled"):
+            extract_doc(img)
+
+    def test_image_only_pdf_routes_to_ocr_when_disabled(self, tmp_path):
+        from app.ingestion.ocr import extract_doc
+
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake image-only pdf")
+        with pytest.raises(ValueError, match="OCR is disabled"):
+            extract_doc(pdf)
+
+    def test_plain_text_uses_local_extraction(self, tmp_path):
+        from app.ingestion.ocr import extract_doc
+
+        note = tmp_path / "note.txt"
+        note.write_text("plain text note with a text layer")
+        assert "plain text note" in extract_doc(note)
+
+    def test_cupsfilter_pdf_uses_local_extraction(self, tmp_path):
+        from app.ingestion.ocr import extract_doc
+
+        src = tmp_path / "doc.txt"
+        src.write_text("PAN card ABCDE1234F")
+        pdf = tmp_path / "doc.pdf"
+        # cupsfilter writes the PDF to stdout, not to a file
+        result = __import__("subprocess").run(
+            ["cupsfilter", str(src)], check=True, capture_output=True
+        )
+        pdf.write_bytes(result.stdout)
+        assert "PAN card" in extract_doc(pdf)
+
+    def test_image_only_pdf_routes_to_ocr(self, tmp_path):
+        import pymupdf
+
+        from app.ingestion.ocr import extract_doc
+
+        src = tmp_path / "doc.txt"
+        src.write_text("PAN card ABCDE1234F")
+        pdf = tmp_path / "doc.pdf"
+        png = tmp_path / "doc.png"
+        scanned = tmp_path / "scanned.pdf"
+        result = __import__("subprocess").run(
+            ["cupsfilter", str(src)], check=True, capture_output=True
+        )
+        pdf.write_bytes(result.stdout)
+        with pymupdf.open(pdf) as doc:
+            doc[0].get_pixmap(dpi=200).save(str(png))
+        __import__("subprocess").run(
+            ["sips", "-s", "format", "pdf", str(png), "--out", str(scanned)],
+            check=True,
+            capture_output=True,
+        )
+        with pytest.raises(ValueError, match="OCR is disabled"):
+            extract_doc(scanned)

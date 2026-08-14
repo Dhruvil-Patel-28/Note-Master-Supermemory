@@ -4,7 +4,7 @@ import openpyxl
 from docx import Document
 from pypdf import PdfReader
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv", ".json"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv", ".json", ".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp"}
 
 TEXT_LAYER_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".docx", ".xlsx", ".pdf"}
 

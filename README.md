@@ -185,7 +185,7 @@ All settings are env-driven and read at import time (`backend/app/config.py`).
 | `OLLAMA_MODEL` | `llama3.2:3b` | Chat/answers model |
 | `OLLAMA_EXTRACT_MODEL` | `llama3.2:3b` | Entity-extraction (NER) model |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model (768-dim) |
-| `OCR_ENABLED` | `0` | Set `1` to enable vision OCR for scanned docs; when disabled, scanned docs fail ingestion by design |
+| `OCR_ENABLED` | `0` | Set `1` to enable vision OCR for scanned/photographed docs (image uploads and image-only PDFs); when disabled, they fail ingestion by design |
 | `OCR_MODEL` | `qwen2.5vl:3b` | Vision model used for OCR |
 | `ASR_MODEL` | `base` | faster-whisper model size for voice transcription |
 
@@ -277,7 +277,7 @@ Quirks that matter if you touch the suite:
 - TestClient runs `BackgroundTasks` after the response → creates return `queued`; tests poll `GET /captures/{id}` until `indexed`.
 - Tests share one session DB; the PIN persists across tests (an `unlock()` helper sets/verifies it) — `TestPin` clears it last (alphabetical file order).
 - LLM-dependent assertions retry up to 3× — small models occasionally hallucinate or answer in prose in noisy multi-capture contexts (observed with several similar PAN docs in one DB).
-- Audio e2e synthesizes a fixture with macOS `say -o file.aiff`; OCR fixtures via `cupsfilter` → `qlmanage -t` (a bare `sips` PNG can render blank).
+- Audio e2e synthesizes a fixture with macOS `say -o file.aiff`; scanned-PDF OCR fixtures via `cupsfilter txt > pdf` (PDF goes to **stdout**) → `pymupdf` page render → `sips -s format pdf png --out scanned.pdf` (`qlmanage -t` hangs headless — never use it).
 
 ---
 

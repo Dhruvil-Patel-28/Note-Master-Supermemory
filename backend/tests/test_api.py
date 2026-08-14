@@ -362,14 +362,19 @@ def test_restore_flips_latest(client):
 def test_entity_extraction_creates_graph(client):
     from app import graph
 
-    cap = create_text(client, "My PAN number is ABCDE1234F issued by Income Tax Department")
-    with graph.get_conn() as conn:
-        rows = graph._rows(
-            conn,
-            "MATCH (c:Capture {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name AS name",
-            {"id": cap["id"]},
-        )
-    assert "abcde1234f" in [r["name"] for r in rows]
+    names = None
+    for _ in range(3):
+        cap = create_text(client, "My PAN number is ABCDE1234F issued by Income Tax Department")
+        with graph.get_conn() as conn:
+            rows = graph._rows(
+                conn,
+                "MATCH (c:Capture {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name AS name",
+                {"id": cap["id"]},
+            )
+        names = [r["name"] for r in rows]
+        if "abcde1234f" in names:
+            break
+    assert names is not None and "abcde1234f" in names
 
 
 @llm
@@ -431,3 +436,76 @@ def test_voice_capture_transcribes(client, tmp_path):
     r = client.get(f"/captures/{cap['id']}/audio")
     assert r.status_code == 200
     assert len(r.content) > 1000
+
+
+@llm
+def test_scanned_doc_ocr_roundtrip(client, tmp_path):
+    import subprocess
+
+    from app.config import settings
+
+    src = tmp_path / "card.txt"
+    src.write_text("PAN card ABCDE1234F")
+    pdf = tmp_path / "card.pdf"
+    png = tmp_path / "card.png"
+    scanned = tmp_path / "card_scanned.pdf"
+    subprocess.run(["cupsfilter", str(src), "-o", str(pdf)], check=True, capture_output=True)
+    subprocess.run(
+        ["qlmanage", "-t", "-s", "1200", "-o", str(tmp_path), str(pdf)],
+        check=True,
+        capture_output=True,
+    )
+    rendered = tmp_path / "card.pdf.png"
+    assert rendered.exists(), "qlmanage render missing"
+    subprocess.run(["sips", "-s", "format", "pdf", str(rendered), "--out", str(scanned)], check=True, capture_output=True)
+
+    object.__setattr__(settings, "ocr_enabled", True)
+    try:
+        with open(scanned, "rb") as fh:
+            r = client.post("/captures/file", files={"file": ("card_scanned.pdf", fh, "application/pdf")})
+        assert r.status_code == 200, r.text
+        cap = wait_indexed(client, r.json(), timeout=120)
+        assert cap["status"] == "indexed", cap.get("error")
+        assert cap["sensitivity_tier"] == "high"
+        assert "ABCDE1234F" in cap["content"].upper()
+    finally:
+        object.__setattr__(settings, "ocr_enabled", False)
+
+
+def _make_scanned_pdf(tmp_path, text: str):
+    import pymupdf
+    import subprocess
+
+    src = tmp_path / "card.txt"
+    src.write_text(text)
+    pdf = tmp_path / "card.pdf"
+    png = tmp_path / "card.png"
+    scanned = tmp_path / "card_scanned.pdf"
+    result = subprocess.run(["cupsfilter", str(src)], check=True, capture_output=True)
+    pdf.write_bytes(result.stdout)
+    with pymupdf.open(pdf) as doc:
+        doc[0].get_pixmap(dpi=200).save(str(png))
+    subprocess.run(
+        ["sips", "-s", "format", "pdf", str(png), "--out", str(scanned)],
+        check=True,
+        capture_output=True,
+    )
+    return scanned
+
+
+@llm
+def test_scanned_doc_ocr_roundtrip(client, tmp_path):
+    from app.config import settings
+
+    scanned = _make_scanned_pdf(tmp_path, "PAN card ABCDE1234F")
+    object.__setattr__(settings, "ocr_enabled", True)
+    try:
+        with open(scanned, "rb") as fh:
+            r = client.post("/captures/file", files={"file": ("card_scanned.pdf", fh, "application/pdf")})
+        assert r.status_code == 200, r.text
+        cap = wait_indexed(client, r.json(), timeout=120)
+        assert cap["status"] == "indexed", cap.get("error")
+        assert cap["sensitivity_tier"] == "high"
+        assert "ABCDE1234F" in cap["content"].upper()
+    finally:
+        object.__setattr__(settings, "ocr_enabled", False)
