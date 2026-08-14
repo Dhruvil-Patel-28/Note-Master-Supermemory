@@ -66,3 +66,18 @@ class ChatResponse(BaseModel):
     sources: list[ChatSource]
     structured: Optional[StructuredAnswer] = None
     needs_pin: bool = False
+
+
+class AuditEntry(BaseModel):
+    id: int
+    query: str | None = None
+    retrieved_source_ids: str | None = None
+    sensitive_access: bool = False
+    created_at: str
+
+
+class FeedbackIn(BaseModel):
+    query: str
+    capture_ids: list[int] = []
+    kind: Literal["wrong", "missing", "off_topic", "other"] = "other"
+    note: str = ""

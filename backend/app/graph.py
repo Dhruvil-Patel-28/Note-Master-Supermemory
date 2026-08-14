@@ -88,6 +88,18 @@ def delete_capture(capture_id: int) -> None:
         logger.warning("graph delete failed for capture %s: %s", capture_id, exc)
 
 
+def restore_capture(capture_id: int, group_ids: list[int]) -> None:
+    try:
+        with get_conn() as conn:
+            for gid in group_ids:
+                conn.execute(
+                    "MATCH (c:Capture {id: $gid}) SET c.is_latest = $latest",
+                    {"gid": gid, "latest": gid == capture_id},
+                )
+    except Exception as exc:
+        logger.warning("graph restore failed for capture %s: %s", capture_id, exc)
+
+
 def search(
     entity_names: list[str],
     limit: int = 10,

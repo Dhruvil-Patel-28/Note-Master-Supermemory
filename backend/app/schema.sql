@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query TEXT NOT NULL,
+    capture_ids TEXT,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('wrong', 'missing', 'off_topic', 'other')),
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(
     content,
     tokenize = 'unicode61'

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import init_db
-from .routes import captures, chat, pin
+from .routes import audit, captures, chat, feedback, health, pin
 
 
 @asynccontextmanager
@@ -25,3 +25,6 @@ app.add_middleware(
 app.include_router(captures.router)
 app.include_router(chat.router)
 app.include_router(pin.router)
+app.include_router(health.router)
+app.include_router(audit.router)
+app.include_router(feedback.router)

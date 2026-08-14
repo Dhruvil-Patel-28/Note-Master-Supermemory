@@ -37,10 +37,17 @@ Everything runs on your machine. No hosted APIs, no API keys, no telemetry, no d
 **Retrieval (right pane):**
 - Natural-language chat over your notes, answered **only** from your captured content.
 - **Structured answers** — asking for your PAN returns a field card (key/value), not prose soup.
-- **Citations** — every answer links to its source capture(s).
+- **Citations** — every answer links to its source capture(s); clicking a source jumps to and highlights the capture.
 - Honest **not-found** path — "I don't have this in my notes" instead of hallucinating.
+- **Correction loop** — flag a wrong answer; the feedback is stored and the source capture re-indexed.
 - **Sensitivity guardrails** — captures are tiered `none` / `moderate` / `high` at ingestion; `high` (ID/financial docs) is PIN-gated at retrieval, every sensitive retrieval is audit-logged.
-- **Versioned re-uploads** — re-uploading a bank statement creates version 2; old versions stay queryable via history, excluded from default retrieval.
+- **Versioned re-uploads** — re-uploading a bank statement creates version 2; old versions stay queryable via history and can be **restored** to latest.
+
+**App shell & polish:**
+- Shadcn/ui design system with **dark/light** themes, responsive layout (two panes on desktop, tabbed on mobile).
+- **Settings panel** — set/change/remove the PIN, browse the **audit log**, and app info.
+- **Search & filter** the capture list by type, status, and text.
+- **Backend health indicator** in the header; graceful errors and toasts instead of silent failures.
 
 ---
 
@@ -106,7 +113,7 @@ All scope decisions were resolved in `PLAN.md` (§3.5, §3.7) before build. The 
 | Graph writes | **Best-effort** | LLM entity extraction can fail; a capture must still index. Failures are logged, never fatal. |
 | Voice playback | **`GET /captures/{id}/audio` (FileResponse)** | Original audio is retained and playable from the capture list — the transcript is searchable, the recording stays yours. |
 | Audio capture format | **MediaRecorder → webm/opus, uploaded to `POST /captures/audio`** | Browser-native, no upload dependency; backend accepts `.m4a/.webm/.wav/.mp3/.aiff/.ogg/.opus`. |
-| Deferred: correction loop | **Unbuilt (Phase 5+)** | User-approved deferral. Flagging a wrong answer to feed back into re-indexing is valuable but orthogonal to the v0.1 core loop. |
+| Correction loop | **Built: `chat_feedback` table + `POST /feedback`** | Flagging a wrong answer stores the query/sources/reason and re-indexes the top source capture (best-effort) so future retrievals reflect the correction — the deferred Phase-5 item, shipped in the UI polish pass. |
 | Deferred: encryption at rest | **Unbuilt (Phase 5+)** | User-approved deferral. Requires rebuilding SQLite around SQLCipher and file-level encryption — a meaningful storage-layer change. Documented here so it's a conscious, visible gap: **today the SQLite DB and raw files are unencrypted on disk.** |
 | Out of scope (PLAN §2.4) | Multi-user collaboration, third-party integrations (Gmail/Drive), native mobile app | v1 is a single-user responsive web app; integrations could come as a future phase. |
 
@@ -198,6 +205,7 @@ Base URL: `http://127.0.0.1:8000`. The frontend proxies `/api/*` → backend via
 | `GET` | `/api/captures/{id}` | Single capture + status (`queued/processing/indexed/failed`) |
 | `GET` | `/api/captures/{id}/audio` | Audio playback (FileResponse; voice captures) |
 | `GET` | `/api/captures/history/{group_id}` | All versions of a document group |
+| `POST` | `/api/captures/{id}/restore` | Promote an older version to latest (flips `is_latest` in SQLite + graph) |
 | `PATCH` | `/api/captures/{id}` | Edit content → reindexes FTS/vectors/graph |
 | `DELETE` | `/api/captures/{id}` | Cascade: FTS rows, vector rows, graph node, files |
 
@@ -213,6 +221,13 @@ Base URL: `http://127.0.0.1:8000`. The frontend proxies `/api/*` → backend via
 | `POST` | `/api/pin/set` | `{"pin": "..."}` — set/change PIN |
 | `POST` | `/api/pin/verify` | `{"pin": "..."}` → `{token}` (30-min TTL) |
 | `DELETE` | `/api/pin/delete` | Remove PIN (allows empty pin — local recovery) |
+
+### System
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | `{status, database, ollama}` — backend + model reachability |
+| `GET` | `/api/audit?limit=100` | Recent `audit_log` entries (query, sources, sensitive flag, time) |
+| `POST` | `/api/feedback` | `{query, capture_ids, kind, note}` — correction-loop feedback; re-indexes the top source capture |
 
 ---
 
@@ -292,17 +307,26 @@ backend/
       chat.py               # grounding prompt, structured-JSON parsing
     guardrails/pin.py       # scrypt PIN, 30-min tokens, app_settings store
     routes/
-      captures.py           # text/file/audio endpoints, versioning, delete cascade, playback
+      captures.py           # text/file/audio endpoints, versioning, delete cascade, playback, restore
       chat.py               # retrieval + PIN gate + audit log
       pin.py                # /pin/status|set|verify|delete
+      health.py             # /health backend + Ollama reachability
+      audit.py              # /audit log viewer
+      feedback.py           # /feedback correction loop
   tests/
     test_api.py             # e2e API tests (llm-marked)
     test_units.py           # pure-logic unit tests (fast path)
 frontend/
   components/
-    CaptureComposer.tsx     # text composer + mic (MediaRecorder) + file upload
-    CaptureList.tsx         # captures, edit/delete/history, audio playback
-    ChatPane.tsx            # chat, structured cards, sensitivity badges, PIN modal
+    app-shell (in page.tsx) # header (health, theme, settings) + two-pane grid + mobile tabs
+    CaptureComposer.tsx     # text composer + mic (MediaRecorder) + drag-drop file upload
+    CaptureList.tsx         # search/filter toolbar, badges, edit/delete dialogs, restore, playback
+    ChatPane.tsx            # markdown answers, field cards, copy, flag-wrong-answer, PIN dialog
+    SettingsDialog.tsx      # PIN mgmt + audit log viewer + about
+    FeedbackDialog.tsx      # correction-loop flag flow
+    HealthIndicator.tsx     # backend/Ollama status dot
+    theme-toggle.tsx        # dark/light/system switcher
+    ui/                     # shadcn/ui components (button, card, dialog, tabs, …)
   lib/api.ts                # typed API client (incl. X-Pin-Token)
 ```
 
@@ -317,7 +341,7 @@ frontend/
 3. Phase 3: LadybugDB property graph + LLM entity extraction + 3-way fusion
 4. Phase 4: voice notes (faster-whisper) + guardrails (sensitivity tiers, PIN gate, audit log, vision OCR)
 
-**Deferred (Phase 5+, user-approved):** correction loop (flag wrong answers → re-index), encryption at rest.
+**Deferred (Phase 5+, user-approved):** encryption at rest.
 
 **Out of scope for v1:** multi-user collaboration, third-party integrations, native mobile app.
 

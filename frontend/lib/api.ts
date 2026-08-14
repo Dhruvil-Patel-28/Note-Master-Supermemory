@@ -40,6 +40,22 @@ export interface ChatResponse {
   needs_pin?: boolean;
 }
 
+export interface AuditEntry {
+  id: number;
+  query: string | null;
+  retrieved_source_ids: string | null;
+  sensitive_access: boolean;
+  created_at: string;
+}
+
+export interface HealthStatus {
+  status: "ok" | "degraded";
+  database: boolean;
+  ollama: boolean;
+}
+
+export type FeedbackKind = "wrong" | "missing" | "off_topic" | "other";
+
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? ""; // empty → same-origin /api via Next rewrite
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -107,5 +123,32 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pin }),
+    }),
+  pinChange: (oldPin: string, newPin: string) =>
+    http<{ ok: boolean }>("/api/pin/change", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old_pin: oldPin, new_pin: newPin }),
+    }),
+  pinDelete: (pin: string) =>
+    http<{ ok: boolean }>("/api/pin", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    }),
+  health: () => http<HealthStatus>("/api/health"),
+  audit: (limit = 100) => http<AuditEntry[]>(`/api/audit?limit=${limit}`),
+  restore: (id: number) =>
+    http<Capture>(`/api/captures/${id}/restore`, { method: "POST" }),
+  submitFeedback: (payload: {
+    query: string;
+    capture_ids: number[];
+    kind: FeedbackKind;
+    note: string;
+  }) =>
+    http<{ ok: boolean }>("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }),
 };

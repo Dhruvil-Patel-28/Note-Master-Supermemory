@@ -204,7 +204,7 @@ def test_structured_prose_answer(client):
         r = client.post("/chat", json={"query": "Where did I go in December?"})
         assert r.status_code == 200
         body = r.json()
-        if body["found"] is True:
+        if body["found"] is True and body["structured"] is not None:
             break
     assert body["found"] is True
     assert body["structured"]["kind"] in ("fields", "prose")
@@ -297,6 +297,65 @@ def test_unsupported_file_rejected(client):
 
 def test_empty_text_rejected(client):
     assert client.post("/captures/text", json={"content": "   "}).status_code == 422
+
+
+def test_health_endpoint(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] in ("ok", "degraded")
+    assert body["database"] is True
+    assert body["ollama"] in (True, False)
+
+
+def test_audit_endpoint_shape(client):
+    r = client.get("/audit")
+    assert r.status_code == 200
+    entries = r.json()
+    assert isinstance(entries, list)
+    if entries:
+        assert {"id", "query", "retrieved_source_ids", "sensitive_access", "created_at"} <= set(entries[0])
+
+
+def test_feedback_stores_row(client):
+    r = client.post(
+        "/feedback",
+        json={"query": "what is my PAN number", "capture_ids": [1, 2], "kind": "wrong", "note": "said PAN was ABC but it is not"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    with db_conn() as conn:
+        row = conn.execute("SELECT query, capture_ids, kind, note FROM chat_feedback ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["query"] == "what is my PAN number"
+    assert row["capture_ids"] == "1,2"
+    assert row["kind"] == "wrong"
+
+
+def test_feedback_empty_query_rejected(client):
+    r = client.post("/feedback", json={"query": "   "})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+
+def test_restore_flips_latest(client):
+    from app.ingestion.pipeline import create_capture
+
+    v1_id = create_capture("text", content="bank statement balance 1000")
+    v2_id = create_capture("text", content="bank statement balance 2500", document_group_id=v1_id)
+
+    v1 = client.get(f"/captures/{v1_id}").json()
+    v2 = client.get(f"/captures/{v2_id}").json()
+    assert v1["is_latest"] is False and v2["is_latest"] is True
+
+    r = client.post(f"/captures/{v1_id}/restore")
+    assert r.status_code == 200, r.text
+    assert r.json()["is_latest"] is True
+
+    v2 = client.get(f"/captures/{v2_id}").json()
+    assert v2["is_latest"] is False
+
+    latest = [c for c in client.get("/captures").json() if c["document_group_id"] == v1_id]
+    assert len(latest) == 1 and latest[0]["id"] == v1_id
 
 
 @llm

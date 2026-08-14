@@ -1,13 +1,18 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { Paperclip, Send, Square, Mic } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 
 export default function CaptureComposer({ onSent }: { onSent: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -16,39 +21,43 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
     const content = text.trim();
     if (!content || busy) return;
     setBusy(true);
-    setError(null);
     try {
       await api.createText(content);
       setText("");
+      toast.success("Note captured");
       onSent();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "send failed");
+      toast.error(e instanceof Error ? e.message : "Send failed");
     } finally {
       setBusy(false);
     }
   }
 
-  async function onFile(file: File | undefined) {
-    if (!file || busy) return;
+  async function sendFile(file: File) {
+    if (busy) return;
     setBusy(true);
-    setError(null);
+    const isAudio = file.type.startsWith("audio/");
     try {
-      await api.createFile(file);
+      if (isAudio) {
+        await api.createAudio(file);
+        toast.success("Voice note uploaded — transcribing…");
+      } else {
+        await api.createFile(file);
+        toast.success(`Uploading ${file.name}…`);
+      }
       onSent();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "upload failed");
+      toast.error(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setBusy(false);
-      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
   async function startRecording() {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      setError("microphone not available in this browser");
+      toast.error("Microphone not available in this browser");
       return;
     }
-    setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const rec = new MediaRecorder(stream);
@@ -65,9 +74,10 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
           await api.createAudio(
             new File([blob], `voice-${Date.now()}.webm`, { type: blob.type })
           );
+          toast.success("Voice note uploaded — transcribing…");
           onSent();
         } catch (e) {
-          setError(e instanceof Error ? e.message : "upload failed");
+          toast.error(e instanceof Error ? e.message : "Upload failed");
         } finally {
           setBusy(false);
         }
@@ -75,8 +85,9 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
       rec.start();
       recorderRef.current = rec;
       setRecording(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "microphone unavailable");
+      toast.info("Recording… tap stop when done");
+    } catch {
+      toast.error("Microphone unavailable");
     }
   }
 
@@ -85,41 +96,81 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
   }
 
   return (
-    <div className="composer">
+    <div
+      className={cn(
+        "space-y-2 border-t bg-background p-3 transition-colors",
+        dragOver && "border-t-2 border-primary"
+      )}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file) sendFile(file);
+      }}
+    >
       <input
         ref={fileRef}
         type="file"
         hidden
-        onChange={(e) => onFile(e.target.files?.[0])}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) sendFile(f);
+          if (fileRef.current) fileRef.current.value = "";
+        }}
       />
-      {error && <div className="composer-error">{error}</div>}
-      <div className="composer-row">
-        <textarea
-          placeholder="Dump a note…"
-          value={text}
-          rows={2}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              sendText();
-            }
-          }}
-        />
-        <button
-          className={`mic ${recording ? "recording" : ""}`}
+      {dragOver && (
+        <p className="rounded-md border border-dashed border-primary px-3 py-2 text-center text-xs text-primary">
+          Drop to upload
+        </p>
+      )}
+      <Textarea
+        placeholder="Dump a note… (drag & drop a file, or record)"
+        value={text}
+        rows={2}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendText();
+          }
+        }}
+      />
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Upload document"
+          disabled={busy}
+          onClick={() => fileRef.current?.click()}
+        >
+          <Paperclip />
+          <span className="sr-only">Upload document</span>
+        </Button>
+        <Button
+          variant={recording ? "destructive" : "ghost"}
+          size="icon"
           title={recording ? "Stop recording" : "Record voice note"}
           disabled={busy}
           onClick={recording ? stopRecording : startRecording}
+          className={cn(recording && "animate-pulse")}
         >
-          {recording ? "■" : "🎤"}
-        </button>
-        <button className="attach" title="Upload document" disabled={busy} onClick={() => fileRef.current?.click()}>
-          +
-        </button>
-        <button className="send" disabled={busy || !text.trim()} onClick={sendText}>
+          {recording ? <Square /> : <Mic />}
+          <span className="sr-only">{recording ? "Stop recording" : "Record voice note"}</span>
+        </Button>
+        <Button
+          className="ml-auto"
+          size="sm"
+          disabled={busy || !text.trim()}
+          onClick={sendText}
+        >
+          <Send />
           Send
-        </button>
+        </Button>
       </div>
     </div>
   );

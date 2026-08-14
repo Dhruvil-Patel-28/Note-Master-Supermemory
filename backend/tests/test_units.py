@@ -133,6 +133,13 @@ class TestGraph:
         assert 100 not in ids
         assert 101 in ids
 
+    def test_restore_capture_flips_latest(self):
+        self._seed()
+        graph.restore_capture(102, [100, 101, 102])
+        ids = [h["capture_id"] for h in graph.search(["electricity bill"])]
+        assert 102 in ids
+        assert 100 not in ids
+
 class TestClassify:
     def test_high_id_documents(self):
         assert classify("My PAN number is ABCDE1234F") == "high"

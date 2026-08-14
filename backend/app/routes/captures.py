@@ -140,6 +140,31 @@ def delete_capture(capture_id: int):
         storage.delete_file(row["raw_content_ref"])
 
 
+@router.post("/{capture_id}/restore", response_model=CaptureOut)
+def restore_capture(capture_id: int):
+    row = _get_capture(capture_id)
+    if row["document_group_id"] is None:
+        raise HTTPException(status_code=422, detail="capture has no version history to restore")
+    if row["is_latest"]:
+        raise HTTPException(status_code=409, detail="capture is already the latest version")
+    with db.get_conn() as conn:
+        group_rows = conn.execute(
+            "SELECT id FROM captures WHERE document_group_id = ?",
+            (row["document_group_id"],),
+        ).fetchall()
+        group_ids = [r["id"] for r in group_rows]
+        conn.execute(
+            "UPDATE captures SET is_latest = 0 WHERE document_group_id = ?",
+            (row["document_group_id"],),
+        )
+        conn.execute(
+            "UPDATE captures SET is_latest = 1 WHERE id = ?",
+            (capture_id,),
+        )
+    graph.restore_capture(capture_id, group_ids)
+    return _to_out(_get_capture(capture_id))
+
+
 @router.get("/{capture_id}/audio")
 def get_audio(capture_id: int):
     row = _get_capture(capture_id)
