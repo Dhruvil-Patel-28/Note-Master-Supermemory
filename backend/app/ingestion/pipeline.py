@@ -1,9 +1,12 @@
 from pathlib import Path
+import logging
 
-from .. import db, storage
+from .. import db, graph, storage
 from .chunker import chunk_text
 from .embeddings import embed_texts
 from .ocr import extract_doc
+
+logger = logging.getLogger(__name__)
 
 
 def _write_chunks(conn, capture_id: int, content: str) -> None:
@@ -21,6 +24,20 @@ def _write_chunks(conn, capture_id: int, content: str) -> None:
             "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
             (cur.lastrowid, str(embedding)),
         )
+
+
+def _write_graph(conn, capture_id: int, content: str) -> None:
+    sibling_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM captures WHERE document_group_id = (SELECT document_group_id FROM captures WHERE id = ?) AND id != ?",
+            (capture_id, capture_id),
+        ).fetchall()
+    ]
+    try:
+        graph.write_capture(capture_id, content, sibling_ids)
+    except Exception as exc:
+        logger.warning("graph write failed for capture %s: %s", capture_id, exc)
 
 
 def create_capture(
@@ -92,3 +109,4 @@ def _extract_and_index(capture_id: int) -> None:
             (capture_id, content),
         )
         _write_chunks(conn, capture_id, content)
+        _write_graph(conn, capture_id, content)

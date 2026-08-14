@@ -40,8 +40,8 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
     )
     prompt = (
         "You are a retrieval assistant. Answer ONLY from the retrieved context below. "
-        "Never invent facts that are not in the context. "
-        'If the context does not contain the answer, reply with exactly this JSON: {"kind": "not_found"}.\n'
+        "You must NEVER use your own knowledge. If the context does not contain the answer, "
+        'reply with exactly this JSON and nothing else: {"kind": "not_found"}.\n'
         "When the question asks for specific facts or fields from a document (ID number, name, "
         'amount, date, etc.), reply with JSON in this shape: '
         '{"kind": "fields", "answer": "<one-line summary>", "fields": [{"key": "<field name>", "value": "<field value>"}]}. '

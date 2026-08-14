@@ -2,6 +2,8 @@ import time
 
 import pytest
 
+llm = pytest.mark.llm
+
 
 def create_text(client, content):
     r = client.post("/captures/text", json={"content": content})
@@ -32,6 +34,7 @@ def upload_file(client, path, filename=None, document_group_id=None):
     return wait_indexed(client, r.json())
 
 
+@llm
 def test_create_and_index_text_capture(client):
     cap = create_text(client, "My PAN number is ABCDE1234F")
     assert cap["type"] == "text"
@@ -40,6 +43,7 @@ def test_create_and_index_text_capture(client):
     assert cap["document_group_id"] == cap["id"]
 
 
+@llm
 def test_versioned_reupload_flips_is_latest(client, tmp_path):
     p = tmp_path / "stmt.txt"
     p.write_text("Bank statement: balance 1000")
@@ -59,6 +63,7 @@ def test_versioned_reupload_flips_is_latest(client, tmp_path):
     assert history[0]["version_number"] == 2
 
 
+@llm
 def test_default_search_excludes_old_versions(client, tmp_path):
     p = tmp_path / "reg.txt"
     p.write_text("car registration number is MH12AB1234")
@@ -76,6 +81,7 @@ def test_default_search_excludes_old_versions(client, tmp_path):
     assert v1["id"] in hit_ids("car registration", include_history=True)
 
 
+@llm
 def test_delete_capture_cascades_to_fts(client):
     cap = create_text(client, "electricity bill amount 3500 rupees")
     r = client.post("/chat", json={"query": "electricity bill"})
@@ -88,6 +94,7 @@ def test_delete_capture_cascades_to_fts(client):
     assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
 
 
+@llm
 def test_edit_capture_reindexes(client):
     from app.retrieval.fts import search as fts_search
 
@@ -98,6 +105,7 @@ def test_edit_capture_reindexes(client):
     assert all(h["capture_id"] != cap["id"] for h in fts_search("Ravi"))
 
 
+@llm
 def test_grounded_not_found(client):
     create_text(client, "My PAN number is ABCDE1234F")
     r = client.post("/chat", json={"query": "How much is 2+2?"})
@@ -107,6 +115,7 @@ def test_grounded_not_found(client):
     assert body["answer"] == "I don't have this in my notes."
 
 
+@llm
 def test_grounded_answer_with_citation(client):
     create_text(client, "My PAN number is ABCDE1234F")
     r = client.post("/chat", json={"query": "What is my PAN number?"})
@@ -117,6 +126,7 @@ def test_grounded_answer_with_citation(client):
     assert body["sources"]
 
 
+@llm
 def test_structured_fields_answer(client):
     create_text(client, "My PAN number is ABCDE1234F issued in my name")
     body = None
@@ -133,6 +143,7 @@ def test_structured_fields_answer(client):
     assert any("pan" in k for k in keys)
 
 
+@llm
 def test_structured_prose_answer(client):
     create_text(client, "Goa trip was in December with friends")
     r = client.post("/chat", json={"query": "Where did I go in December?"})
@@ -142,6 +153,7 @@ def test_structured_prose_answer(client):
     assert body["structured"]["kind"] in ("fields", "prose")
 
 
+@llm
 def test_vector_search_recall(client):
     create_text(client, "I love running along Marine Drive at sunrise")
     r = client.post("/chat", json={"query": "jogging near the sea in the morning"})
@@ -149,6 +161,7 @@ def test_vector_search_recall(client):
     assert any("Marine Drive" in s["snippet"] for s in r.json()["sources"])
 
 
+@llm
 def test_vector_search_excludes_old_versions(client, tmp_path):
     p = tmp_path / "plan.txt"
     p.write_text("road trip planned to the mountains this summer")
@@ -160,6 +173,7 @@ def test_vector_search_excludes_old_versions(client, tmp_path):
     assert v2["id"] in [s["capture_id"] for s in r.json()["sources"]]
 
 
+@llm
 def test_delete_capture_cascades_chunks(client):
     from app.db import get_conn
 
@@ -183,6 +197,7 @@ def test_delete_capture_cascades_chunks(client):
     assert n == 0 and nv == 0
 
 
+@llm
 def test_edit_reindexes_chunks(client):
     from app.db import get_conn
 
@@ -200,6 +215,7 @@ def test_edit_reindexes_chunks(client):
     assert old != new and "Priya" in new
 
 
+@llm
 def test_file_upload_docx(client, tmp_path):
     from docx import Document
 
@@ -224,3 +240,59 @@ def test_unsupported_file_rejected(client):
 
 def test_empty_text_rejected(client):
     assert client.post("/captures/text", json={"content": "   "}).status_code == 422
+
+
+@llm
+def test_entity_extraction_creates_graph(client):
+    from app import graph
+
+    cap = create_text(client, "My PAN number is ABCDE1234F issued by Income Tax Department")
+    with graph.get_conn() as conn:
+        rows = graph._rows(
+            conn,
+            "MATCH (c:Capture {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name AS name",
+            {"id": cap["id"]},
+        )
+    assert "abcde1234f" in [r["name"] for r in rows]
+
+
+@llm
+def test_graph_two_hop_related_capture(client):
+    from app import graph
+
+    create_text(client, "The electricity bill was issued by Adani Power")
+    cap2 = create_text(client, "Call Adani Power for outages, helpline 1800-233")
+    ids = [h["capture_id"] for h in graph.search(["electricity bill"])]
+    assert cap2["id"] in ids, f"expected 2-hop reach of {cap2['id']}, got {ids}"
+
+
+@llm
+def test_graph_versioning_excludes_old(client, tmp_path):
+    from app import graph
+
+    p = tmp_path / "stmt.txt"
+    p.write_text("Bank statement for account ACC-777")
+    v1 = upload_file(client, p)
+    p.write_text("Bank statement for account ACC-888")
+    v2 = upload_file(client, p, document_group_id=v1["document_group_id"])
+    ids = [h["capture_id"] for h in graph.search(["bank statement"])]
+    assert v2["id"] in ids
+    assert v1["id"] not in ids
+
+
+@llm
+def test_edit_capture_reindexes_graph(client):
+    from app import graph
+
+    cap = create_text(client, "meeting with Ravi about project alpha")
+    client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
+    wait_indexed(client, {"id": cap["id"]})
+    with graph.get_conn() as conn:
+        rows = graph._rows(
+            conn,
+            "MATCH (c:Capture {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name AS name",
+            {"id": cap["id"]},
+        )
+    names = [r["name"] for r in rows]
+    assert "priya" in names
+    assert "ravi" not in names

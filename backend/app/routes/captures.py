@@ -1,6 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 
-from .. import db, storage
+from .. import db, graph, storage
 from ..ingestion.extractors import SUPPORTED_EXTENSIONS
 from ..ingestion.pipeline import create_capture
 from ..ingestion.tasks import schedule_ingest
@@ -96,6 +96,7 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
 @router.delete("/{capture_id}", status_code=204)
 def delete_capture(capture_id: int):
     row = _get_capture(capture_id)
+    graph.delete_capture(capture_id)
     with db.get_conn() as conn:
         conn.execute(
             "DELETE FROM chunks_vec WHERE rowid IN (SELECT id FROM capture_chunks WHERE capture_id = ?)",

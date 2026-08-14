@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
 
-from .. import db
+from .. import db, graph
 from ..config import settings
+from ..ingestion.extract import extract
 from ..retrieval import vector
 from ..retrieval.chat import grounded_answer
 from ..retrieval.fts import search as fts_search
@@ -20,11 +21,21 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 @router.post("", response_model=ChatResponse)
 def chat(payload: ChatRequest):
     fts_hits = fts_search(payload.query, limit=10, include_old_versions=payload.include_history)
+    vector_hits = []
     try:
         vector_hits = vector.search(payload.query, limit=10, include_old_versions=payload.include_history)
     except Exception:
-        vector_hits = []
-    hits = fuse(fts_hits, vector_hits, limit=5)
+        pass
+    graph_hits = []
+    try:
+        entities = extract(payload.query)["entities"]
+        graph_hits = graph.search(
+            [e["name"] for e in entities],
+            include_old_versions=payload.include_history,
+        )
+    except Exception:
+        pass
+    hits = fuse(fts_hits, vector_hits, graph_hits, limit=5)
     try:
         answer, found, structured = grounded_answer(payload.query, hits)
     except Exception as exc:
