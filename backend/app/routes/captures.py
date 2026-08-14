@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from .. import db, graph, storage
 from ..ingestion.extractors import SUPPORTED_EXTENSIONS
@@ -65,6 +68,26 @@ def create_file_capture(
     return _to_out(_get_capture(capture_id))
 
 
+AUDIO_EXTENSIONS = {".m4a", ".webm", ".wav", ".mp3", ".aiff", ".ogg", ".opus"}
+
+
+@router.post("/audio", response_model=CaptureOut)
+def create_audio_capture(background: BackgroundTasks, file: UploadFile = File(...)):
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported audio type {ext!r}; supported: {sorted(AUDIO_EXTENSIONS)}",
+        )
+    data = file.file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="empty file")
+    rel = storage.save_upload(file.filename, data)
+    capture_id = create_capture("voice", raw_content_ref=rel)
+    schedule_ingest(background, capture_id)
+    return _to_out(_get_capture(capture_id))
+
+
 @router.get("", response_model=list[CaptureOut])
 def list_captures(include_old_versions: bool = False):
     clause = "" if include_old_versions else "WHERE is_latest = 1"
@@ -115,6 +138,18 @@ def delete_capture(capture_id: int):
             )
     if row["raw_content_ref"]:
         storage.delete_file(row["raw_content_ref"])
+
+
+@router.get("/{capture_id}/audio")
+def get_audio(capture_id: int):
+    row = _get_capture(capture_id)
+    if row["type"] != "voice" or not row["raw_content_ref"]:
+        raise HTTPException(status_code=404, detail="no audio for this capture")
+    path = Path(storage.resolve_path(row["raw_content_ref"]))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="audio file missing")
+    media_type = {".m4a": "audio/mp4", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".aiff": "audio/aiff"}.get(path.suffix.lower(), "audio/webm")
+    return FileResponse(path, media_type=media_type)
 
 
 @router.get("/history/{document_group_id}", response_model=list[CaptureOut])

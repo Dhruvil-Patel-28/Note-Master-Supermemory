@@ -47,6 +47,7 @@ class ChatRequest(BaseModel):
 class ChatSource(BaseModel):
     capture_id: int
     snippet: str
+    sensitivity_tier: str = "none"
 
 
 class StructuredField(BaseModel):
@@ -64,3 +65,4 @@ class ChatResponse(BaseModel):
     found: bool
     sources: list[ChatSource]
     structured: Optional[StructuredAnswer] = None
+    needs_pin: bool = False

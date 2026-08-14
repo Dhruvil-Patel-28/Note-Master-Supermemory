@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(
     content,
     tokenize = 'unicode61'
@@ -44,7 +49,8 @@ CREATE TABLE IF NOT EXISTS capture_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
-    text TEXT NOT NULL
+    text TEXT NOT NULL,
+    embedding BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_capture ON capture_chunks(capture_id);

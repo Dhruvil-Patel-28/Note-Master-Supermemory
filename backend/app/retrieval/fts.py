@@ -3,10 +3,16 @@ import re
 from .. import db
 
 _SPECIAL = re.compile(r'[^\w\s]')
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+    "he", "i", "in", "is", "it", "its", "me", "much", "my", "of", "on",
+    "or", "that", "the", "this", "to", "was", "we", "were", "what", "will",
+    "with", "you", "your",
+}
 
 
 def search(query: str, limit: int = 10, include_old_versions: bool = False) -> list[dict]:
-    terms = [t for t in _SPECIAL.sub(" ", query).split() if t]
+    terms = [t for t in _SPECIAL.sub(" ", query).split() if t and t.lower() not in _STOPWORDS]
     if not terms:
         return []
 

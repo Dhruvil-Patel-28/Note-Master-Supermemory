@@ -1,5 +1,9 @@
+import base64
 from pathlib import Path
 
+import ollama
+
+from ..config import settings
 from .extractors import extract_text
 
 _SUPPORTED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp"}
@@ -10,11 +14,23 @@ def is_image(path: Path) -> bool:
 
 
 def ocr_image(path: Path) -> str:
-    """Qwen-OCR wrapper (Phase 4 hardens this; Phase 1 stub raises)."""
-    raise NotImplementedError(
-        "Qwen-OCR not wired yet: install the model and set OCR_ENABLED=1. "
-        "Scanned/photographed documents are not supported in Phase 1."
+    if not settings.ocr_enabled:
+        raise ValueError(
+            "OCR is disabled (OCR_ENABLED=1 needed); scanned/photographed documents are not supported"
+        )
+    image = base64.b64encode(path.read_bytes()).decode()
+    response = ollama.Client(host=settings.ollama_host).chat(
+        model=settings.ocr_model,
+        messages=[
+            {
+                "role": "user",
+                "content": "Transcribe all text exactly, preserving reading order and line breaks. Do not summarize.",
+                "images": [image],
+            }
+        ],
+        options={"temperature": 0.1},
     )
+    return response["message"]["content"].strip()
 
 
 def extract_doc(path: Path) -> str:

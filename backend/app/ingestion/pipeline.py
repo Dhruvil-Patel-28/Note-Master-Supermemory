@@ -1,8 +1,11 @@
 from pathlib import Path
+import array
 import logging
 
 from .. import db, graph, storage
+from .asr import transcribe
 from .chunker import chunk_text
+from .classify import classify
 from .embeddings import embed_texts
 from .ocr import extract_doc
 
@@ -17,8 +20,8 @@ def _write_chunks(conn, capture_id: int, content: str) -> None:
     embeddings = embed_texts(chunks)
     for i, (text, embedding) in enumerate(zip(chunks, embeddings)):
         cur = conn.execute(
-            "INSERT INTO capture_chunks (capture_id, chunk_index, text) VALUES (?, ?, ?)",
-            (capture_id, i, text),
+            "INSERT INTO capture_chunks (capture_id, chunk_index, text, embedding) VALUES (?, ?, ?, ?)",
+            (capture_id, i, text, array.array("f", embedding).tobytes()),
         )
         conn.execute(
             "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
@@ -99,9 +102,13 @@ def _extract_and_index(capture_id: int) -> None:
         content = row["content"]
         if row["type"] == "doc" and row["raw_content_ref"]:
             content = extract_doc(Path(storage.resolve_path(row["raw_content_ref"])))
+        elif row["type"] == "voice" and row["raw_content_ref"]:
+            content = transcribe(Path(storage.resolve_path(row["raw_content_ref"])))
+        if not content:
+            raise ValueError("no content extracted (empty or failed OCR/ASR)")
         conn.execute(
-            "UPDATE captures SET content = ?, status = 'indexed', error = NULL WHERE id = ?",
-            (content, capture_id),
+            "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ? WHERE id = ?",
+            (content, classify(content), capture_id),
         )
         conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
         conn.execute(

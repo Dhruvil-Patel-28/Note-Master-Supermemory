@@ -12,7 +12,8 @@ class Settings:
     ollama_extract_model: str = os.getenv("OLLAMA_EXTRACT_MODEL", "llama3.2:3b")
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     ocr_enabled: bool = os.getenv("OCR_ENABLED", "0") == "1"
-    ocr_model: str = os.getenv("OCR_MODEL", "qwen-ocr:small")
+    ocr_model: str = os.getenv("OCR_MODEL", "qwen2.5vl:3b")
+    asr_model: str = os.getenv("ASR_MODEL", "base")
 
     @property
     def db_path(self) -> Path:

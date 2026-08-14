@@ -2,7 +2,9 @@ import pytest
 
 from app import graph
 from app.config import settings
+from app.guardrails import pin
 from app.ingestion.chunker import chunk_text
+from app.ingestion.classify import classify
 from app.ingestion.extract import parse_response
 from app.retrieval.fusion import fuse
 
@@ -130,3 +132,47 @@ class TestGraph:
         ids = [h["capture_id"] for h in hits]
         assert 100 not in ids
         assert 101 in ids
+
+class TestClassify:
+    def test_high_id_documents(self):
+        assert classify("My PAN number is ABCDE1234F") == "high"
+        assert classify("Aadhaar 1234 5678 9012 verified") == "high"
+        assert classify("Bank statement for account ACC-777") == "high"
+        assert classify("electricity bill amount was 3500 rupees") == "high"
+
+    def test_moderate_keywords(self):
+        assert classify("meeting with Ravi on Friday") == "moderate"
+        assert classify("doctor appointment at 5pm") == "moderate"
+
+    def test_none(self):
+        assert classify("Goa trip was in December with friends") == "none"
+        assert classify("remember to buy milk") == "none"
+
+    def test_empty(self):
+        assert classify("") == "none"
+        assert classify("   ") == "none"
+
+
+class TestPin:
+    def test_set_verify_clear_lifecycle(self):
+        pin.clear_pin()
+        assert not pin.is_set()
+        pin.set_pin("4321")
+        assert pin.is_set()
+        assert pin.verify_pin("4321")
+        assert not pin.verify_pin("0000")
+        pin.set_pin("9999")
+        assert pin.verify_pin("9999")
+        assert not pin.verify_pin("4321")
+        pin.clear_pin()
+        assert not pin.is_set()
+        assert not pin.verify_pin("9999")
+
+    def test_token_roundtrip_and_invalid(self):
+        pin.set_pin("1234")
+        token = pin.issue_token()
+        assert pin.token_valid(token)
+        assert not pin.token_valid("garbage")
+        assert not pin.token_valid(None)
+        pin.clear_pin()
+        assert not pin.token_valid(token)

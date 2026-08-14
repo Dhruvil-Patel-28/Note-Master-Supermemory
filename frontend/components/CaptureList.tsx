@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { api, Capture } from "@/lib/api";
-
 const STATUS_LABEL: Record<Capture["status"], string> = {
   queued: "queued",
   processing: "processing…",
@@ -72,6 +71,9 @@ function CaptureItem({
         <p className="capture-content">
           {cap.type === "doc" ? `📄 ${cap.content.slice(0, 200)}` : cap.content}
         </p>
+      )}
+      {cap.type === "voice" && cap.raw_content_ref && cap.status === "indexed" && (
+        <audio controls src={api.audioUrl(cap.id)} className="capture-audio" />
       )}
       {cap.status === "failed" && cap.error && (
         <p className="capture-error">{cap.error}</p>

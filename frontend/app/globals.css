@@ -226,6 +226,116 @@ button:disabled {
   width: 34px;
 }
 
+.composer-row .mic {
+  width: 34px;
+}
+
+.composer-row .mic.recording {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.capture-audio {
+  width: 100%;
+  margin-top: 6px;
+  height: 30px;
+}
+
+.sensitive-note {
+  color: var(--warn);
+}
+
+.msg-sources li.tier-high {
+  background: #3a2626;
+  color: #ffb4a9;
+}
+
+.msg-sources li.tier-moderate {
+  background: #3a3526;
+  color: #ffe2a9;
+}
+
+.pin-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.pin-modal {
+  background: var(--pane);
+  border: 1px solid var(--pane-border);
+  border-radius: 12px;
+  padding: 20px 24px;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pin-modal h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.pin-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.pin-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  margin-left: 6px;
+  text-decoration: underline;
+}
+
+.pin-modal input {
+  border-radius: 8px;
+  border: 1px solid var(--pane-border);
+  background: #202228;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.pin-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pin-actions button {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--pane-border);
+  background: #23252b;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pin-actions button:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .chat {
   display: flex;
   flex-direction: column;

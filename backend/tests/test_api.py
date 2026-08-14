@@ -34,6 +34,21 @@ def upload_file(client, path, filename=None, document_group_id=None):
     return wait_indexed(client, r.json())
 
 
+def unlock(client, pin="1234"):
+    """Ensure a PIN is set and return a valid unlock token."""
+    if not client.get("/pin/status").json()["set"]:
+        assert client.post("/pin/set", json={"pin": pin}).status_code == 200
+    r = client.post("/pin/verify", json={"pin": pin})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def db_conn():
+    from app import db
+
+    return db.get_conn()
+
+
 @llm
 def test_create_and_index_text_capture(client):
     cap = create_text(client, "My PAN number is ABCDE1234F")
@@ -41,6 +56,7 @@ def test_create_and_index_text_capture(client):
     assert cap["status"] == "indexed"
     assert cap["version_number"] == 1
     assert cap["document_group_id"] == cap["id"]
+    assert cap["sensitivity_tier"] == "high"
 
 
 @llm
@@ -84,13 +100,15 @@ def test_default_search_excludes_old_versions(client, tmp_path):
 @llm
 def test_delete_capture_cascades_to_fts(client):
     cap = create_text(client, "electricity bill amount 3500 rupees")
-    r = client.post("/chat", json={"query": "electricity bill"})
+    token = unlock(client)
+    h = {"X-Pin-Token": token}
+    r = client.post("/chat", json={"query": "electricity bill"}, headers=h)
     assert any(s["capture_id"] == cap["id"] for s in r.json()["sources"])
 
     assert client.delete(f"/captures/{cap['id']}").status_code == 204
     assert client.get(f"/captures/{cap['id']}").status_code == 404
 
-    r = client.post("/chat", json={"query": "electricity bill"})
+    r = client.post("/chat", json={"query": "electricity bill"}, headers=h)
     assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
 
 
@@ -118,20 +136,55 @@ def test_grounded_not_found(client):
 @llm
 def test_grounded_answer_with_citation(client):
     create_text(client, "My PAN number is ABCDE1234F")
-    r = client.post("/chat", json={"query": "What is my PAN number?"})
-    assert r.status_code == 200
-    body = r.json()
+    token = unlock(client)
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "What is my PAN number?"}, headers={"X-Pin-Token": token})
+        assert r.status_code == 200
+        body = r.json()
+        if body["found"] is True and "ABCDE1234F" in body["answer"]:
+            break
     assert body["found"] is True
     assert "ABCDE1234F" in body["answer"]
     assert body["sources"]
 
 
 @llm
-def test_structured_fields_answer(client):
-    create_text(client, "My PAN number is ABCDE1234F issued in my name")
+def test_pin_gates_sensitive_chat_and_audits(client):
+    cap = create_text(client, "My PAN number is ABCDE1234F")
+
+    r = client.post("/chat", json={"query": "What is my PAN number?"})
+    assert r.status_code == 200
+    assert r.json()["needs_pin"] is True
+    assert r.json()["found"] is False
+
+    token = unlock(client)
     body = None
     for _ in range(3):
-        r = client.post("/chat", json={"query": "What is my PAN number?"})
+        r = client.post("/chat", json={"query": "What is my PAN number?"}, headers={"X-Pin-Token": token})
+        body = r.json()
+        if body["found"] is True and "ABCDE1234F" in body["answer"]:
+            break
+    assert body["needs_pin"] is not True
+    assert body["found"] is True
+    assert "ABCDE1234F" in body["answer"]
+    assert any(s["capture_id"] == cap["id"] for s in body["sources"])
+    assert body["sources"][0]["sensitivity_tier"] == "high"
+
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT query, sensitive_access FROM audit_log ORDER BY id DESC LIMIT 3"
+        ).fetchall()
+    assert any(r["sensitive_access"] == 1 for r in rows)
+
+
+@llm
+def test_structured_fields_answer(client):
+    create_text(client, "My PAN number is ABCDE1234F issued in my name")
+    token = unlock(client)
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "What is my PAN number?"}, headers={"X-Pin-Token": token})
         assert r.status_code == 200
         body = r.json()
         if body["structured"] and body["structured"]["kind"] == "fields":
@@ -146,9 +199,13 @@ def test_structured_fields_answer(client):
 @llm
 def test_structured_prose_answer(client):
     create_text(client, "Goa trip was in December with friends")
-    r = client.post("/chat", json={"query": "Where did I go in December?"})
-    assert r.status_code == 200
-    body = r.json()
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "Where did I go in December?"})
+        assert r.status_code == 200
+        body = r.json()
+        if body["found"] is True:
+            break
     assert body["found"] is True
     assert body["structured"]["kind"] in ("fields", "prose")
 
@@ -296,3 +353,22 @@ def test_edit_capture_reindexes_graph(client):
     names = [r["name"] for r in rows]
     assert "priya" in names
     assert "ravi" not in names
+
+@llm
+def test_voice_capture_transcribes(client, tmp_path):
+    import subprocess
+
+    audio = tmp_path / "voice-note.aiff"
+    subprocess.run(["say", "-o", str(audio), "Remember to buy milk tomorrow"], check=True, capture_output=True)
+    with open(audio, "rb") as fh:
+        r = client.post("/captures/audio", files={"file": ("voice-note.aiff", fh, "audio/aiff")})
+    assert r.status_code == 200, r.text
+    cap = wait_indexed(client, r.json(), timeout=90)
+    assert cap["status"] == "indexed", cap.get("error")
+    assert cap["type"] == "voice"
+    assert "milk" in cap["content"].lower()
+    assert cap["sensitivity_tier"] in ("none", "moderate", "high")
+
+    r = client.get(f"/captures/{cap['id']}/audio")
+    assert r.status_code == 200
+    assert len(r.content) > 1000

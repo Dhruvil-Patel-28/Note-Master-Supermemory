@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
 from .. import db, graph
 from ..config import settings
+from ..guardrails import pin
 from ..ingestion.extract import extract
 from ..retrieval import vector
 from ..retrieval.chat import grounded_answer
@@ -17,9 +18,11 @@ from ..schemas import (
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+PIN_REQUIRED_ANSWER = "This answer includes sensitive documents. Unlock with your PIN to view it."
+
 
 @router.post("", response_model=ChatResponse)
-def chat(payload: ChatRequest):
+def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
     fts_hits = fts_search(payload.query, limit=10, include_old_versions=payload.include_history)
     vector_hits = []
     try:
@@ -36,6 +39,25 @@ def chat(payload: ChatRequest):
     except Exception:
         pass
     hits = fuse(fts_hits, vector_hits, graph_hits, limit=5)
+
+    tiers = _sensitivity_tiers([h["capture_id"] for h in hits])
+    has_high = any(t == "high" for t in tiers.values())
+    unlocked = not has_high or (x_pin_token and pin.token_valid(x_pin_token))
+    sensitive_access = has_high and unlocked
+
+    if has_high and not unlocked:
+        with db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
+                (payload.query, ",".join(str(h["capture_id"]) for h in hits), 0),
+            )
+        return ChatResponse(
+            answer=PIN_REQUIRED_ANSWER,
+            found=False,
+            sources=[ChatSource(capture_id=h["capture_id"], snippet=h["snippet"], sensitivity_tier=tiers[h["capture_id"]]) for h in hits],
+            needs_pin=True,
+        )
+
     try:
         answer, found, structured = grounded_answer(payload.query, hits)
     except Exception as exc:
@@ -50,14 +72,17 @@ def chat(payload: ChatRequest):
             (
                 payload.query,
                 ",".join(str(h["capture_id"]) for h in hits),
-                0,
+                1 if sensitive_access else 0,
             ),
         )
 
     return ChatResponse(
         answer=answer,
         found=found,
-        sources=[ChatSource(capture_id=h["capture_id"], snippet=h["snippet"]) for h in hits],
+        sources=[
+            ChatSource(capture_id=h["capture_id"], snippet=h["snippet"], sensitivity_tier=tiers[h["capture_id"]])
+            for h in hits
+        ],
         structured=(
             StructuredAnswer(
                 kind=structured["kind"],
@@ -67,3 +92,15 @@ def chat(payload: ChatRequest):
             else None
         ),
     )
+
+
+def _sensitivity_tiers(capture_ids: list[int]) -> dict[int, str]:
+    if not capture_ids:
+        return {}
+    placeholders = ",".join("?" for _ in capture_ids)
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT id, sensitivity_tier FROM captures WHERE id IN ({placeholders})",
+            capture_ids,
+        ).fetchall()
+    return {r["id"]: r["sensitivity_tier"] for r in rows}
