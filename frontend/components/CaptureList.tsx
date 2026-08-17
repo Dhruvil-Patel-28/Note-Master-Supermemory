@@ -263,7 +263,7 @@ function VersionHistory({
               <li key={h.id} className="flex items-center gap-2 text-xs">
                 <Badge variant={h.is_latest ? "default" : "outline"}>v{h.version_number}</Badge>
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {h.content.slice(0, 60)}
+                  {h.type === "doc" ? h.original_filename ?? `#${h.id}` : h.content.slice(0, 60)}
                 </span>
                 {h.is_latest ? (
                   <span className="text-xs text-muted-foreground">current</span>
@@ -331,23 +331,25 @@ function CaptureItem({
             <DeleteDialog cap={cap} onDeleted={onChanged} />
           </div>
         </div>
-        <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">
+        <div className="text-sm leading-relaxed break-words whitespace-pre-wrap">
           {cap.type === "doc" ? (
-            <span className="flex gap-1.5">
+            <div className="flex items-start gap-1.5">
               <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-              <span>
-                {cap.original_filename && (
-                  <span className="mr-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-                    {cap.original_filename}
-                  </span>
+              <div className="min-w-0">
+                <p className="font-medium">
+                  {cap.original_filename ?? `Document #${cap.id}`}
+                </p>
+                {cap.status === "indexed" && (
+                  <p className="text-xs text-muted-foreground">
+                    {cap.content.length} chars indexed — open the file to view it
+                  </p>
                 )}
-                {cap.content.slice(0, 200)}
-              </span>
-            </span>
+              </div>
+            </div>
           ) : (
             cap.content
           )}
-        </p>
+        </div>
         {cap.type === "voice" && cap.raw_content_ref && cap.status === "indexed" && (
           <audio controls src={api.audioUrl(cap.id)} className="h-8 w-full" />
         )}
