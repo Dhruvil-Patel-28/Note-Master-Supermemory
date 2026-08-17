@@ -33,12 +33,18 @@ export interface StructuredAnswer {
   fields: StructuredField[];
 }
 
+export interface ShowDocument {
+  capture_id: number;
+  filename: string | null;
+}
+
 export interface ChatResponse {
   answer: string;
   found: boolean;
   sources: ChatSource[];
   structured?: StructuredAnswer | null;
   needs_pin?: boolean;
+  show_document?: ShowDocument | null;
 }
 
 export interface AuditEntry {

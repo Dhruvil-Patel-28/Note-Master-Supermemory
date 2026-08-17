@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Header, HTTPException
 
 from .. import db, graph
@@ -12,6 +14,7 @@ from ..schemas import (
     ChatRequest,
     ChatResponse,
     ChatSource,
+    ShowDocument,
     StructuredAnswer,
     StructuredField,
 )
@@ -19,6 +22,35 @@ from ..schemas import (
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 PIN_REQUIRED_ANSWER = "This answer includes sensitive documents. Unlock with your PIN to view it."
+
+_SHOW_VERBS = {
+    "show", "get", "open", "display", "view", "fetch", "download", "retrieve",
+    "see", "find", "bring", "give", "print", "read", "pull",
+}
+_DOC_NOUNS = {
+    "resume", "cv", "document", "doc", "file", "pdf", "statement", "bill",
+    "invoice", "receipt", "report", "letter", "slip", "contract", "agreement",
+    "certificate", "license", "licence", "passport", "aadhaar", "aadhar", "pan",
+}
+
+
+def _document_intent(query: str) -> bool:
+    words = set(re.findall(r"[a-z]+", query.lower()))
+    return bool(words & _SHOW_VERBS) and bool(words & _DOC_NOUNS)
+
+
+def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
+    if not _document_intent(query):
+        return None
+    for h in hits:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT type, raw_content_ref, original_filename FROM captures WHERE id = ?",
+                (h["capture_id"],),
+            ).fetchone()
+        if row and row["type"] == "doc" and row["raw_content_ref"]:
+            return ShowDocument(capture_id=h["capture_id"], filename=row["original_filename"])
+    return None
 
 
 @router.post("", response_model=ChatResponse)
@@ -92,6 +124,7 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
             if structured
             else None
         ),
+        show_document=_find_document(payload.query, hits),
     )
 
 

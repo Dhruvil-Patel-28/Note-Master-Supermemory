@@ -5,6 +5,7 @@ import {
   Copy,
   Check,
   ExternalLink,
+  FileText,
   Flag,
   Lock,
   RotateCw,
@@ -13,7 +14,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, Capture, ChatResponse, ChatSource } from "@/lib/api";
+import { api, Capture, ChatResponse, ChatSource, ShowDocument } from "@/lib/api";
 import Markdown from "@/components/markdown";
 import FeedbackDialog from "@/components/feedback-dialog";
 import { Button } from "@/components/ui/button";
@@ -279,6 +280,44 @@ function PinDialog({
   );
 }
 
+function DocumentPreview({
+  doc,
+  onOpenChange,
+}: {
+  doc: ShowDocument;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const ext = (doc.filename ?? "").split(".").pop()?.toLowerCase() ?? "";
+  const iframeable = ["pdf", "png", "jpg", "jpeg", "webp", "tiff", "bmp"].includes(ext);
+  useEffect(() => {
+    if (!iframeable) {
+      window.open(api.fileUrl(doc.capture_id), "_blank");
+      onOpenChange(false);
+    }
+  }, [iframeable, doc.capture_id, onOpenChange]);
+  if (!iframeable) return null;
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="flex h-[80vh] w-[min(90vw,900px)] flex-col sm:max-w-none">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FileText className="size-4" />
+            {doc.filename ?? `capture #${doc.capture_id}`}
+          </DialogTitle>
+          <DialogDescription>
+            Original document — capture #{doc.capture_id}
+          </DialogDescription>
+        </DialogHeader>
+        <iframe
+          src={api.fileUrl(doc.capture_id)}
+          className="min-h-0 flex-1 rounded-lg border bg-background"
+          title={doc.filename ?? "document"}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function ChatPane({
   captures,
   onSourceClick,
@@ -300,6 +339,7 @@ export default function ChatPane({
   const [pinOpen, setPinOpen] = useState(false);
   const [pinSetup, setPinSetup] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<Message | null>(null);
+  const [preview, setPreview] = useState<ShowDocument | null>(null);
   const pendingQueryRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -348,6 +388,9 @@ export default function ChatPane({
           sensitive: res.sources.some((s) => s.sensitivity_tier !== "none"),
         },
       ]);
+      if (res.show_document) {
+        setPreview(res.show_document);
+      }
     } catch (e) {
       setMessages((m) => [
         ...m,
@@ -432,6 +475,7 @@ export default function ChatPane({
         query={feedbackMsg?.query ?? ""}
         captureIds={feedbackMsg?.sources?.map((s) => s.capture_id) ?? []}
       />
+      {preview && <DocumentPreview doc={preview} onOpenChange={(o) => { if (!o) setPreview(null); }} />}
     </div>
   );
 }

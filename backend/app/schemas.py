@@ -61,12 +61,18 @@ class StructuredAnswer(BaseModel):
     fields: list[StructuredField] = []
 
 
+class ShowDocument(BaseModel):
+    capture_id: int
+    filename: Optional[str] = None
+
+
 class ChatResponse(BaseModel):
     answer: str
     found: bool
     sources: list[ChatSource]
     structured: Optional[StructuredAnswer] = None
     needs_pin: bool = False
+    show_document: Optional[ShowDocument] = None
 
 
 class AuditEntry(BaseModel):
