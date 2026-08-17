@@ -14,6 +14,12 @@ _EXPAND_CAPTURE_CHARS = 6000
 _EXPAND_TOTAL_CHARS = 14000
 _TAG_RE = re.compile(r"<[^>]+>")
 
+# Queries with these words expect a structured fields card; if the model
+# answers prose for one, retry once (the 3b model randomly flips to prose).
+_STRUCTURED_LIST_WORDS = {
+    "semester", "sem", "course", "courses", "subjects", "skills", "projects",
+}
+
 # Jailbreak/injection phrasings stripped from the query before retrieval and the
 # LLM call. A 3b model told to bypass its instructions will comply — removing the
 # instruction text leaves only the (usually unanswerable) question.
@@ -44,6 +50,106 @@ def scrub_injection(query: str) -> str:
 
 def _client() -> ollama.Client:
     return ollama.Client(host=settings.ollama_host)
+
+
+_ROMAN_NUMERALS = {
+    "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8,
+}
+_SEMESTER_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8,
+}
+_LABEL_RE = re.compile(r"^(?:I|II|III|IV|V|VI|VII|VIII|[1-8])$")
+_CODE_RE = re.compile(r"^[A-Z]{2,4}$")
+_COMBINED_CODE_RE = re.compile(r"^[A-Z]{2,4}\d{2,3}$")
+_DIGITS_RE = re.compile(r"^\d{2,3}$")
+_GRADE_RE = re.compile(r"^(?:[ABCD]{2}|SS)$")
+
+
+def _semester_number(query: str) -> int | None:
+    q = query.lower()
+    m = re.search(r"(?:sem|semester)\s*(\d+)\b", q)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"\b(\d+)\s*(?:st|nd|rd|th)\s*(?:sem|semester)\b", q)
+    if m:
+        return int(m.group(1))
+    for word, num in _SEMESTER_WORDS.items():
+        if word in q:
+            return num
+    return None
+
+
+def _parse_transcript_sections(text: str) -> list[tuple[int, list[tuple[str, str]]]]:
+    """Parse semester sections out of transcript text.
+
+    Transcript rows look like: label (I, II, 2, III...) then repeating
+    CODE / NAME... / GRADE / CREDIT. The 3b model can't reliably tell a
+    section label from digits inside course codes, so this runs in Python
+    over the full extracted text (chunks would duplicate rows via overlap)
+    and the LLM is only asked to list what it's handed.
+    """
+    tokens = re.split(r"\s+", text.strip())
+    sections: list[tuple[int, list[tuple[str, str]]]] = []
+    current: tuple[int, list[tuple[str, str]]] | None = None
+    prev = ""
+    i, n = 0, len(tokens)
+    while i < n:
+        t = tokens[i]
+        if _LABEL_RE.match(t):
+            # A digit token right after a grade is a credit ("BC 2"), not a
+            # section label; roman numerals are always labels.
+            if re.match(r"^\d$", t) and _GRADE_RE.match(prev):
+                i += 1
+                continue
+            num = _ROMAN_NUMERALS.get(t)
+            if num is None:
+                num = int(t)
+            current = (num, [])
+            sections.append(current)
+            prev = t
+            i += 1
+            continue
+        code = None
+        if _COMBINED_CODE_RE.match(t):
+            code = t
+        elif _CODE_RE.match(t) and i + 1 < n and _DIGITS_RE.match(tokens[i + 1]):
+            code = t + " " + tokens[i + 1]
+            i += 1
+        if code:
+            j, name = i + 1, []
+            while j < n and not _GRADE_RE.match(tokens[j]) and not _LABEL_RE.match(tokens[j]):
+                name.append(tokens[j])
+                j += 1
+            if j < n and _GRADE_RE.match(tokens[j]) and j + 1 < n and re.match(r"^\d+$", tokens[j + 1]):
+                if current and name:
+                    current[1].append((code, " ".join(name)))
+                i = j + 2
+                prev = tokens[j + 1]
+                continue
+        prev = t
+        i += 1
+    return [s for s in sections if s[1]]
+
+
+def _semester_context(query: str, capture_ids: list[int]) -> str | None:
+    num = _semester_number(query)
+    if num is None:
+        return None
+    for cid in capture_ids:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT content FROM captures WHERE id = ?", (cid,)
+            ).fetchone()
+        if not row or not row["content"]:
+            continue
+        for label, courses in _parse_transcript_sections(row["content"]):
+            if label == num:
+                listing = "; ".join(f"{code} {name}" for code, name in courses)
+                return f"Parsed transcript — Semester {num}: {listing}"
+    return None
 
 
 def _chunks(capture_id: int) -> list[str]:
@@ -225,6 +331,9 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
     context = "\n".join(
         f"[{i + 1}] (capture {h['capture_id']}): {h['snippet']}" for i, h in enumerate(hits)
     )
+    sem_ctx = _semester_context(query, [h["capture_id"] for h in hits])
+    if sem_ctx:
+        context += f"\n\n{sem_ctx}"
     system = (
         "You are a retrieval assistant. Answer ONLY from the retrieved context below. "
         "You must NEVER use your own knowledge. If the context does not contain the answer, "
@@ -260,15 +369,26 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         'Otherwise reply with JSON in this shape: {"kind": "prose", "answer": "<answer with citations like [1], [2]>"}.\n'
         f"\nRetrieved context:\n{context}"
     )
-    response = _client().chat(
-        model=settings.ollama_model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": query},
-        ],
-        options={"temperature": 0.1, "think": False, "num_predict": 4096},
-    )
-    answer, found, structured = _parse_response(response["message"]["content"])
-    if found and structured and structured["fields"]:
-        structured["fields"] = _filter_fields(structured["fields"], context)
+    def ask() -> tuple[str, bool, dict | None]:
+        response = _client().chat(
+            model=settings.ollama_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": query},
+            ],
+            options={"temperature": 0.1, "think": False, "num_predict": 4096},
+        )
+        answer, found, structured = _parse_response(response["message"]["content"])
+        if found and structured and structured["fields"]:
+            structured["fields"] = _filter_fields(structured["fields"], context)
+        return answer, found, structured
+
+    answer, found, structured = ask()
+    if (
+        found
+        and structured
+        and structured["kind"] == "prose"
+        and any(w in query.lower() for w in _STRUCTURED_LIST_WORDS)
+    ):
+        answer, found, structured = ask()
     return answer, found, structured
