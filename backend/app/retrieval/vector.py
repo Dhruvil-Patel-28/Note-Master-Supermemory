@@ -7,7 +7,9 @@ from ..ingestion.embeddings import embed_texts
 MIN_COSINE_DISTANCE = 0.5
 
 
-def _cosine_distance(query: list[float], vec: bytes) -> float:
+def _cosine_distance(query: list[float], vec: bytes | None) -> float:
+    if not vec:
+        return 1.0
     v = array.array("f", vec)
     dot = sum(a * b for a, b in zip(query, v))
     norm_q = math.sqrt(sum(a * a for a in query))
