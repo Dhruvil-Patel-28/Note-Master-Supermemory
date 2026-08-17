@@ -22,7 +22,8 @@ export default function Home() {
 
   const refresh = useCallback(async () => {
     try {
-      setCaptures(await api.listCaptures());
+      const caps = await api.listCaptures();
+      setCaptures(Array.from(new Map(caps.map((c) => [c.id, c])).values()));
     } catch {
       // backend unreachable; HealthIndicator surfaces this
     }

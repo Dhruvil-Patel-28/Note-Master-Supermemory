@@ -37,7 +37,7 @@ import {
 import { cn } from "@/lib/utils";
 
 interface Message {
-  id: number;
+  id: string;
   role: "user" | "assistant" | "error";
   text: string;
   query?: string;
@@ -48,7 +48,11 @@ interface Message {
   needsPin?: boolean;
 }
 
-let nextId = 1;
+function newMessageId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function SourceChip({
   s,
@@ -329,7 +333,7 @@ export default function ChatPane({
 }) {
   const [messages, setMessages] = useState<Message[]>([
     {
-      id: nextId++,
+      id: newMessageId(),
       role: "assistant",
       text: "Ask anything about what you've captured. I only answer from your notes — every answer is grounded and cited.",
     },
@@ -352,7 +356,7 @@ export default function ChatPane({
     if (!text || busy) return;
     if (!q) {
       setBusy(true);
-      setMessages((m) => [...m, { id: nextId++, role: "user", text }]);
+      setMessages((m) => [...m, { id: newMessageId(), role: "user", text }]);
       setQuery("");
     }
     const token = retryToken !== undefined ? retryToken : sessionStorage.getItem("nm-pin-token");
@@ -365,7 +369,7 @@ export default function ChatPane({
         setMessages((m) => [
           ...m,
           {
-            id: nextId++,
+            id: newMessageId(),
             role: "assistant",
             text: res.answer,
             query: text,
@@ -378,7 +382,7 @@ export default function ChatPane({
       setMessages((m) => [
         ...m,
         {
-          id: nextId++,
+          id: newMessageId(),
           role: "assistant",
           text: res.answer,
           query: text,
@@ -394,7 +398,7 @@ export default function ChatPane({
     } catch (e) {
       setMessages((m) => [
         ...m,
-        { id: nextId++, role: "error", text: e instanceof Error ? e.message : "Chat failed" },
+        { id: newMessageId(), role: "error", text: e instanceof Error ? e.message : "Chat failed" },
       ]);
     } finally {
       setBusy(false);
