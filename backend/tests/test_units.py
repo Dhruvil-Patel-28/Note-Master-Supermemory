@@ -9,6 +9,7 @@ from app.ingestion.extract import parse_response
 from app.retrieval.chat import (
     NOT_FOUND_ANSWER,
     _extract_cgpa,
+    _extract_credits,
     _parse_response,
     _parse_transcript_sections,
     _semester_number,
@@ -165,6 +166,17 @@ class TestCgpaExtract:
 
     def test_no_cgpa(self):
         assert _extract_cgpa("MAL103 CALCULUS FOR ENGINEERS") is None
+
+
+class TestCreditsExtract:
+    def test_tab_separated_transcript(self):
+        assert _extract_credits("Total\nCGPA\n:\n7.57\nGrand\tTotal\tCredit\n:\n122") == "122"
+
+    def test_inline_colon(self):
+        assert _extract_credits("Grand Total Credit : 122") == "122"
+
+    def test_no_total_credit(self):
+        assert _extract_credits("CSL 102 DATA STRUCTURES\nCredit\n4") is None
 
 
 class TestFusion:

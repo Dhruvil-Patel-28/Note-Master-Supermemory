@@ -125,9 +125,16 @@ def test_semester_courses_answered_completely_and_injection_proof(client):
         "HUL 101 COMMUNICATION SKILLS\nBC\n3\n"
         "BEL 101 MECHANICS AND GRAPHICS\nBB\n4\n"
         "Total\nIII\nMAL 201 NUMERICAL METHODS\nBC\n4\n"
-        "Total\nCGPA\n:\n7.57"
+        "Total\nCGPA\n:\n7.57\nGrand\tTotal\tCredit\n:\n122"
     )
     create_text(client, transcript)
+
+    r = client.post("/chat", json={"query": "how many credits have i earned till now"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["found"], body
+    assert "122" in body["answer"]
+    assert not body["needs_pin"]
 
     r = client.post("/chat", json={"query": "my 2nd semester courses"})
     assert r.status_code == 200, r.text

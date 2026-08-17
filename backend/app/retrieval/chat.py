@@ -190,6 +190,49 @@ def _cgpa_context(query: str, capture_ids: list[int]) -> str | None:
     return None
 
 
+_CREDITS_WORDS = {"credit", "credits"}
+_CREDITS_RE = re.compile(r"Grand\s+Total\s+Credit\s*:?\s*(\d+)", re.IGNORECASE)
+
+
+def _extract_credits(text: str) -> str | None:
+    m = _CREDITS_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _credits_data(query: str, capture_ids: list[int]) -> dict | None:
+    if not any(w in query.lower() for w in _CREDITS_WORDS):
+        return None
+    for cid in capture_ids:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT content FROM captures WHERE id = ?", (cid,)
+            ).fetchone()
+        if not row or not row["content"]:
+            continue
+        value = _extract_credits(row["content"])
+        if value:
+            return {"credits": value, "capture_id": cid}
+    return None
+
+
+def transcript_fact_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | None] | None:
+    """Deterministic transcript facts (semester courses, total credits) built in
+    Python from the parsed capture contents — the 3b model drops list items and
+    misreads values, so the LLM is never asked for these. Returns None when no
+    parsed fact applies, so the normal (gated, LLM) path runs unchanged."""
+    capture_ids = [h["capture_id"] for h in hits]
+    sem = _semester_data(query, capture_ids)
+    if sem is not None:
+        ordinal = _ORDINALS.get(sem["num"], f"{sem['num']}th")
+        fields = [{"key": code, "value": name} for code, name in sem["courses"]]
+        return f"Your {ordinal} semester courses are below [1].", True, {"kind": "fields", "fields": fields}
+    cred = _credits_data(query, capture_ids)
+    if cred is not None:
+        cite = next((i + 1 for i, h in enumerate(hits) if h["capture_id"] == cred["capture_id"]), 1)
+        return f"You have earned {cred['credits']} credits in total [{cite}].", True, {"kind": "prose", "fields": []}
+    return None
+
+
 def _chunks(capture_id: int) -> list[str]:
     with db.get_conn() as conn:
         rows = conn.execute(
@@ -370,16 +413,10 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
 def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | None]:
     if not hits:
         return NOT_FOUND_ANSWER, False, None
+    det = transcript_fact_answer(query, hits)
+    if det is not None:
+        return det
     capture_ids = [h["capture_id"] for h in hits]
-    sem_data = _semester_data(query, capture_ids)
-    if sem_data is not None:
-        # The exact course list is parsed in Python — the 3b model drops items
-        # from long lists (3rd sem came back with 2 of 6), so the answer is
-        # built here deterministically and the LLM is never asked to enumerate.
-        ordinal = _ORDINALS.get(sem_data["num"], f"{sem_data['num']}th")
-        answer = f"Your {ordinal} semester courses are below [1]."
-        fields = [{"key": code, "value": name} for code, name in sem_data["courses"]]
-        return answer, True, {"kind": "fields", "fields": fields}
     context = "\n".join(
         f"[{i + 1}] (capture {h['capture_id']}): {h['snippet']}" for i, h in enumerate(hits)
     )

@@ -7,7 +7,12 @@ from ..config import settings
 from ..guardrails import pin
 from ..ingestion.extract import extract
 from ..retrieval import vector
-from ..retrieval.chat import expand_hits, grounded_answer, scrub_injection
+from ..retrieval.chat import (
+    expand_hits,
+    grounded_answer,
+    scrub_injection,
+    transcript_fact_answer,
+)
 from ..retrieval.fts import search as fts_search
 from ..retrieval.fusion import fuse
 from ..schemas import (
@@ -56,7 +61,7 @@ def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
 _ACADEMIC_WORDS = {
     "semester", "sem", "term", "trimester", "cgpa", "gpa", "marksheet",
     "transcript", "grade", "grades", "result", "results", "course", "courses",
-    "academic", "marks", "score",
+    "academic", "marks", "score", "credit", "credits",
 }
 # Transcripts label semesters with bare digits ("2 / DIGITAL ELECTRONICS / ...")
 # — no "semester" word to match. Academic-intent queries get these doc-ish terms
@@ -94,7 +99,14 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
     unlocked = not has_high or (x_pin_token and pin.token_valid(x_pin_token))
     sensitive_access = has_high and unlocked
 
-    if has_high and not unlocked:
+    # Deterministic transcript facts (semester courses, total credits) are
+    # parsed in Python from the capture contents — the answer never touches the
+    # LLM and never draws on sensitive captures, so an unrelated high-tier hit
+    # dragged in by vector noise must not gate them (e.g. an Aadhaar note
+    # ranking 4th for "how many credits have I earned").
+    det = transcript_fact_answer(query, hits)
+
+    if has_high and not unlocked and det is None:
         with db.get_conn() as conn:
             conn.execute(
                 "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
@@ -112,6 +124,8 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
         answer = f"Here's your {show_doc.filename or 'document'} — opened in the preview."
         found = True
         structured = None
+    elif det is not None:
+        answer, found, structured = det
     else:
         try:
             answer, found, structured = grounded_answer(query, context_hits)
