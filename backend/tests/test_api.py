@@ -138,6 +138,17 @@ def test_note_stored_and_indexed_in_fts(client, tmp_path):
     assert "this is my resume" not in row["content"]
 
 
+def test_fts_typo_tolerance(client):
+    from app.retrieval.fts import search as fts_search
+
+    cap = create_text(client, "remember to buy batteries for the remote")
+    assert any(h["capture_id"] == cap["id"] for h in fts_search("byu batteries"))
+
+    typo_cap = create_text(client, "i have to but mangoes tomorrow")
+    hits = fts_search("buy mangoes")
+    assert any(h["capture_id"] == typo_cap["id"] for h in hits)
+
+
 @llm
 def test_edit_capture_reindexes(client):
     from app.retrieval.fts import search as fts_search

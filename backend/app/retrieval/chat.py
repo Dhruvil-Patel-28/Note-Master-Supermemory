@@ -117,6 +117,8 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         "facts about the user: for example, a note saying \"with my dog\" means the user has a dog, "
         "and a note saying \"my PAN number is ABCDE1234F\" means that is the user's PAN. "
         "Never answer 'Unknown' or 'no information' when the context directly supports an answer.\n"
+        "The user's notes may contain typos (e.g. 'but' for 'buy', 'tomorroew' for 'tomorrow') — "
+        "read them with that in mind.\n"
         "Example: Context: [1] (capture 2): I love running along Marine Drive with my dog. "
         'Question: do I have a dog? Answer: {"kind": "prose", "answer": "Yes, you have a dog — you run along Marine Drive with it [1]."}\n'
         "When the question asks for specific facts or fields from a document (ID number, name, "
