@@ -64,6 +64,28 @@ class TestChatParse:
         )
         assert found and answer == "Your college name is IIIT Nagpur."
 
+    def test_fields_array_missing_closing_bracket_is_salvaged(self):
+        answer, found, structured = _parse_response(
+            '{"kind": "fields", "answer": "You did 2 courses [1].", '
+            '"fields": [{"key": "CSL 102", "value": "DATA STRUCTURES"}, '
+            '{"key": "CSL 103", "value": "APPLICATION PROGRAMMING"}}'
+        )
+        assert found and answer == "You did 2 courses [1]."
+        assert structured["fields"] == [
+            {"key": "CSL 102", "value": "DATA STRUCTURES"},
+            {"key": "CSL 103", "value": "APPLICATION PROGRAMMING"},
+        ]
+
+    def test_filter_fields_drops_ungrounded_keys(self):
+        from app.retrieval.chat import _filter_fields
+
+        fields = [
+            {"key": "CSL 102", "value": "DATA STRUCTURES"},
+            {"key": "CSL 310", "value": "ARTIFICIAL INTELLIGENCE"},
+        ]
+        out = _filter_fields(fields, "CSL\t102 DATA STRUCTURES")
+        assert [f["key"] for f in out] == ["CSL 102"]
+
     def test_scrub_injection_strips_jailbreak_phrasing(self):
         from app.retrieval.chat import scrub_injection
 

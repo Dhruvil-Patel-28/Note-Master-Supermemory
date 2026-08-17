@@ -141,6 +141,47 @@ def _salvage(text: str) -> dict | None:
     return {"kind": kind.group(1), "answer": answer.group(1)}
 
 
+def _salvage_fields(text: str) -> list[dict]:
+    """Recover the fields array from malformed model JSON. The 3b model
+    produces two failure shapes on long lists: a dropped delimiter mid-list
+    (fails json.loads), or the array's closing `]` omitted entirely
+    (`...CLOUD COMPUTING"}}`). Individual field objects stay well-formed, so
+    match them from the `"fields": [` marker onwards."""
+    start = re.search(r'"fields"\s*:\s*\[', text)
+    if not start:
+        return []
+    tail = text[start.end():]
+    return [
+        {"key": k, "value": v}
+        for k, v in re.findall(
+            r'\{"key"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"value"\s*:\s*"((?:[^"\\]|\\.)*)"\}',
+            tail,
+        )
+    ]
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _filter_fields(fields: list[dict], context: str) -> list[dict]:
+    """Dedupe fields and drop any whose key doesn't appear in the retrieved
+    context — the small model invents list items (courses it never took) when
+    asked to enumerate, and the key is the most checkable part."""
+    ctx = _normalize(context)
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for f in fields:
+        key = _normalize(str(f.get("key", "")))
+        value = str(f.get("value", "")).strip()
+        if not key or (key, value) in seen:
+            continue
+        seen.add((key, value))
+        if key in ctx:
+            out.append({"key": f["key"], "value": value})
+    return out
+
+
 def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
     text = raw.strip()
     if text.startswith("```"):
@@ -162,6 +203,8 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
         # (e.g. {"kind": "prose", "answer": "...", ["1"]}) — salvage the
         # fields it did emit rather than dropping the whole answer.
         data = _salvage(text)
+        if data is not None:
+            data["fields"] = _salvage_fields(text)
     if data is None:
         return NOT_FOUND_ANSWER, False, None
     if data.get("kind") == "not_found":
@@ -202,9 +245,12 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         'Example: Context: [1] (capture 3): i have to buy mangoes tomorrow. [2] (capture 13): remember to buy batteries for the remote. '
         'Question: do I need to buy anything? Answer: {"kind": "prose", "answer": "Yes: you need to buy mangoes tomorrow [1] and batteries for the remote [2]."}\n'
         "When the question asks for specific facts or fields from a document (ID number, name, "
-        'amount, date, etc.), reply with JSON in this shape: '
-        '{"kind": "fields", "answer": "<one-line summary>", "fields": [{"key": "<field name>", "value": "<field value>"}]}. '
+        'amount, date, etc.) — or a list of items with names or codes (courses, projects, skills) — reply with JSON in this shape: '
+        '{"kind": "fields", "answer": "<one-line summary>", "fields": [{"key": "<item name or code>", "value": "<item detail>"}]}. '
+        'For lists, put EVERY matching item as its own field, in order. '
         "Cite the source at the end of the summary like [1], [2].\n"
+        'Example: Context: [1] (capture 20): CSL 102 DATA STRUCTURES, CSL 103 APPLICATION PROGRAMMING. '
+        'Question: which courses did I do? Answer: {"kind": "fields", "answer": "You did 2 courses so far [1].", "fields": [{"key": "CSL 102", "value": "DATA STRUCTURES"}, {"key": "CSL 103", "value": "APPLICATION PROGRAMMING"}]}\n'
         'Otherwise reply with JSON in this shape: {"kind": "prose", "answer": "<answer with citations like [1], [2]>"}.\n'
         f"\nRetrieved context:\n{context}"
     )
@@ -214,6 +260,9 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
             {"role": "system", "content": system},
             {"role": "user", "content": query},
         ],
-        options={"temperature": 0.1, "think": False},
+        options={"temperature": 0.1, "think": False, "num_predict": 4096},
     )
-    return _parse_response(response["message"]["content"])
+    answer, found, structured = _parse_response(response["message"]["content"])
+    if found and structured and structured["fields"]:
+        structured["fields"] = _filter_fields(structured["fields"], context)
+    return answer, found, structured
