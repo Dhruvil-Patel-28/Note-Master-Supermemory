@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import db, graph, storage
@@ -19,6 +19,7 @@ def _to_out(row) -> CaptureOut:
         content=row["content"],
         raw_content_ref=row["raw_content_ref"],
         original_filename=row["original_filename"],
+        note=row["note"],
         status=row["status"],
         error=row["error"],
         sensitivity_tier=row["sensitivity_tier"],
@@ -52,6 +53,7 @@ def create_text_capture(payload: TextCaptureIn, background: BackgroundTasks):
 def create_file_capture(
     background: BackgroundTasks,
     file: UploadFile = File(...),
+    note: str | None = Form(None),
     document_group_id: int | None = None,
 ):
     ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
@@ -65,7 +67,11 @@ def create_file_capture(
         raise HTTPException(status_code=422, detail="empty file")
     rel = storage.save_upload(file.filename, data)
     capture_id = create_capture(
-        "doc", raw_content_ref=rel, original_filename=file.filename, document_group_id=document_group_id
+        "doc",
+        raw_content_ref=rel,
+        original_filename=file.filename,
+        note=note.strip() if note else None,
+        document_group_id=document_group_id,
     )
     schedule_ingest(background, capture_id)
     return _to_out(_get_capture(capture_id))
@@ -107,15 +113,29 @@ def get_capture(capture_id: int):
 @router.patch("/{capture_id}", response_model=CaptureOut)
 def update_capture(capture_id: int, payload: CaptureUpdateIn, background: BackgroundTasks):
     row = _get_capture(capture_id)
-    content = payload.content.strip()
-    if not content:
-        raise HTTPException(status_code=422, detail="content must not be empty")
+    content = payload.content.strip() if payload.content else None
+    note = payload.note.strip() if payload.note else None
+    if content is None and note is None:
+        raise HTTPException(status_code=422, detail="nothing to update")
     with db.get_conn() as conn:
-        conn.execute(
-            "UPDATE captures SET content = ?, status = 'queued', error = NULL WHERE id = ?",
-            (content, capture_id),
-        )
-    schedule_ingest(background, capture_id)
+        if content is not None:
+            if not content:
+                raise HTTPException(status_code=422, detail="content must not be empty")
+            conn.execute(
+                "UPDATE captures SET content = ?, note = ?, status = 'queued', error = NULL WHERE id = ?",
+                (content, note, capture_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE captures SET note = ? WHERE id = ?",
+                (note, capture_id),
+            )
+    if content is not None:
+        schedule_ingest(background, capture_id)
+    else:
+        from ..ingestion.pipeline import rebuild_fts
+
+        rebuild_fts(capture_id)
     return _to_out(_get_capture(capture_id))
 
 

@@ -112,6 +112,32 @@ def test_delete_capture_cascades_to_fts(client):
     assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
 
 
+def test_note_stored_and_indexed_in_fts(client, tmp_path):
+    from app.retrieval.fts import search as fts_search
+
+    p = tmp_path / "resume.txt"
+    p.write_text("Dhruvil Patel - software engineer")
+    r = client.post(
+        "/captures/file",
+        files={"file": ("resume.txt", p.open("rb"), "text/plain")},
+        data={"note": "this is my resume"},
+    )
+    assert r.status_code == 200, r.text
+    cap = wait_indexed(client, r.json())
+    assert cap["note"] == "this is my resume"
+    assert any(h["capture_id"] == cap["id"] for h in fts_search("this is my resume"))
+
+    r = client.patch(f"/captures/{cap['id']}", json={"note": "updated note label"})
+    assert r.status_code == 200, r.text
+    assert r.json()["note"] == "updated note label"
+    assert any(h["capture_id"] == cap["id"] for h in fts_search("updated note label"))
+    with db_conn() as conn:
+        row = conn.execute("SELECT content FROM captures_fts WHERE rowid = ?", (cap["id"],)).fetchone()
+    assert row is not None
+    assert "updated note label" in row["content"]
+    assert "this is my resume" not in row["content"]
+
+
 @llm
 def test_edit_capture_reindexes(client):
     from app.retrieval.fts import search as fts_search

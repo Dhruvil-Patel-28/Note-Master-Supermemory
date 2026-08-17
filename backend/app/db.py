@@ -40,6 +40,7 @@ def init_db() -> None:
         for col, ddl in {
             "embedding": "ALTER TABLE capture_chunks ADD COLUMN embedding BLOB",
             "original_filename": "ALTER TABLE captures ADD COLUMN original_filename TEXT",
+            "note": "ALTER TABLE captures ADD COLUMN note TEXT",
         }.items():
             try:
                 conn.execute(ddl)

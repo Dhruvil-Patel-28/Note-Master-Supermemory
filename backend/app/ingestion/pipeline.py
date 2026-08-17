@@ -48,14 +48,15 @@ def create_capture(
     content: str = "",
     raw_content_ref: str = None,
     original_filename: str = None,
+    note: str = None,
     document_group_id: int = None,
     user_id: int = None,
 ) -> int:
     with db.get_conn() as conn:
         if document_group_id is None:
             cur = conn.execute(
-                "INSERT INTO captures (type, content, raw_content_ref, original_filename, user_id) VALUES (?, ?, ?, ?, ?)",
-                (type_, content, raw_content_ref, original_filename, user_id),
+                "INSERT INTO captures (type, content, raw_content_ref, original_filename, note, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (type_, content, raw_content_ref, original_filename, note, user_id),
             )
             capture_id = cur.lastrowid
             conn.execute(
@@ -73,9 +74,9 @@ def create_capture(
         ).fetchone()[0] + 1
         cur = conn.execute(
             """INSERT INTO captures
-               (type, content, raw_content_ref, original_filename, status, document_group_id, version_number, is_latest, user_id)
-               VALUES (?, ?, ?, ?, 'queued', ?, ?, 1, ?)""",
-            (type_, content, raw_content_ref, original_filename, document_group_id, version, user_id),
+               (type, content, raw_content_ref, original_filename, note, status, document_group_id, version_number, is_latest, user_id)
+               VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?)""",
+            (type_, content, raw_content_ref, original_filename, note, document_group_id, version, user_id),
         )
         return cur.lastrowid
 
@@ -97,6 +98,32 @@ def run_pipeline(capture_id: int) -> None:
         raise
 
 
+def rebuild_fts(capture_id: int, conn=None) -> None:
+    if conn is None:
+        with db.get_conn() as conn:
+            _rebuild_fts(conn, capture_id)
+        return
+    _rebuild_fts(conn, capture_id)
+
+
+def _rebuild_fts(conn, capture_id: int) -> None:
+    row = conn.execute(
+        "SELECT content, original_filename, note FROM captures WHERE id = ?", (capture_id,)
+    ).fetchone()
+    if row is None:
+        return
+    fts_text = row["content"]
+    if row["original_filename"]:
+        fts_text = f"{row['original_filename']}\n{fts_text}"
+    if row["note"]:
+        fts_text = f"{row['note']}\n{fts_text}"
+    conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
+    conn.execute(
+        "INSERT INTO captures_fts (rowid, content) VALUES (?, ?)",
+        (capture_id, fts_text),
+    )
+
+
 def _extract_and_index(capture_id: int) -> None:
     with db.get_conn() as conn:
         row = conn.execute("SELECT * FROM captures WHERE id = ?", (capture_id,)).fetchone()
@@ -111,13 +138,6 @@ def _extract_and_index(capture_id: int) -> None:
             "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ? WHERE id = ?",
             (content, classify(content), capture_id),
         )
-        fts_text = content
-        if row["original_filename"]:
-            fts_text = f"{row['original_filename']}\n{content}"
-        conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
-        conn.execute(
-            "INSERT INTO captures_fts (rowid, content) VALUES (?, ?)",
-            (capture_id, fts_text),
-        )
+        rebuild_fts(capture_id, conn)
         _write_chunks(conn, capture_id, content)
         _write_graph(conn, capture_id, content)

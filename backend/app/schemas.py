@@ -20,6 +20,7 @@ class CaptureOut(BaseModel):
     content: str
     raw_content_ref: Optional[str] = None
     original_filename: Optional[str] = None
+    note: Optional[str] = None
     status: CaptureStatus
     error: Optional[str] = None
     sensitivity_tier: SensitivityTier
@@ -31,7 +32,8 @@ class CaptureOut(BaseModel):
 
 
 class CaptureUpdateIn(BaseModel):
-    content: str
+    content: Optional[str] = None
+    note: Optional[str] = None
 
 
 class FtsHit(BaseModel):

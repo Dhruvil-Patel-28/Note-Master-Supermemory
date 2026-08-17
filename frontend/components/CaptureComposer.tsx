@@ -1,10 +1,11 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Paperclip, Send, Square, Mic } from "lucide-react";
+import { FileText, Paperclip, Send, Square, Mic, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +14,8 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [fileNote, setFileNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -33,18 +36,27 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
     }
   }
 
-  async function sendFile(file: File) {
-    if (busy) return;
+  function stageFile(file: File) {
+    setPendingFile(file);
+    setFileNote("");
+  }
+
+  async function sendFile() {
+    const file = pendingFile;
+    if (!file || busy) return;
     setBusy(true);
     const isAudio = file.type.startsWith("audio/");
+    const note = fileNote.trim();
     try {
       if (isAudio) {
-        await api.createAudio(file);
+        await api.createAudio(file, note);
         toast.success("Voice note uploaded — transcribing…");
       } else {
-        await api.createFile(file);
+        await api.createFile(file, note);
         toast.success(`Uploading ${file.name}…`);
       }
+      setPendingFile(null);
+      setFileNote("");
       onSent();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed");
@@ -110,7 +122,7 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
         e.preventDefault();
         setDragOver(false);
         const file = e.dataTransfer.files?.[0];
-        if (file) sendFile(file);
+        if (file) stageFile(file);
       }}
     >
       <input
@@ -119,7 +131,7 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) sendFile(f);
+          if (f) stageFile(f);
           if (fileRef.current) fileRef.current.value = "";
         }}
       />
@@ -127,6 +139,33 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
         <p className="rounded-md border border-dashed border-primary px-3 py-2 text-center text-xs text-primary">
           Drop to upload
         </p>
+      )}
+      {pendingFile && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-2">
+          <FileText className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate text-xs font-medium">
+            {pendingFile.name}
+          </span>
+          <Input
+            placeholder="What is this? e.g. my resume, my Aadhaar card"
+            value={fileNote}
+            onChange={(e) => setFileNote(e.target.value)}
+            className="h-8 flex-1 text-xs"
+          />
+          <Button size="sm" className="h-8" disabled={busy} onClick={sendFile}>
+            <Upload className="size-3.5" />
+            Upload
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Cancel"
+            disabled={busy}
+            onClick={() => setPendingFile(null)}
+          >
+            <X />
+          </Button>
+        </div>
       )}
       <Textarea
         placeholder="Dump a note… (drag & drop a file, or record)"

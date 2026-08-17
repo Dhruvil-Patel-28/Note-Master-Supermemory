@@ -115,18 +115,33 @@ function EditDialog({
   onSaved: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (open && cap) setDraft(cap.content);
+    if (open && cap) {
+      setDraft(cap.content);
+      setNote(cap.note ?? "");
+    }
   }, [open, cap]);
 
   async function save() {
-    if (!cap || !draft.trim() || busy) return;
+    if (!cap || busy) return;
+    const contentChanged = cap.type !== "doc" && draft.trim() && draft !== cap.content;
+    const noteChanged = note.trim() !== (cap.note ?? "").trim();
+    if (!contentChanged && !noteChanged) {
+      onOpenChange(false);
+      return;
+    }
     setBusy(true);
     try {
-      await api.update(cap.id, draft);
-      toast.success("Capture updated — re-indexing…");
+      if (contentChanged) {
+        await api.update(cap.id, draft, note);
+        toast.success("Capture updated — re-indexing…");
+      } else {
+        await api.updateNote(cap.id, note);
+        toast.success("Note updated");
+      }
       onOpenChange(false);
       onSaved();
     } catch (e) {
@@ -141,19 +156,31 @@ function EditDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit capture #{cap?.id}</DialogTitle>
-          <DialogDescription>Editing re-indexes this capture.</DialogDescription>
+          <DialogDescription>
+            {cap?.type === "doc"
+              ? "Add a note describing this document (e.g. “my resume”)."
+              : "Editing re-indexes this capture."}
+          </DialogDescription>
         </DialogHeader>
-        <Textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={6}
-          autoFocus
+        {cap?.type === "doc" ? null : (
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={6}
+            autoFocus
+          />
+        )}
+        <Label className="text-xs text-muted-foreground">Note (what is this?)</Label>
+        <Input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. my resume, my Aadhaar card"
         />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={busy || !draft.trim()}>
+          <Button onClick={save} disabled={busy}>
             Save
           </Button>
         </DialogFooter>
@@ -339,6 +366,9 @@ function CaptureItem({
                 <p className="font-medium">
                   {cap.original_filename ?? `Document #${cap.id}`}
                 </p>
+                {cap.note && (
+                  <p className="text-xs text-primary">“{cap.note}”</p>
+                )}
                 {cap.status === "indexed" && (
                   <p className="text-xs text-muted-foreground">
                     {cap.content.length} chars indexed — open the file to view it

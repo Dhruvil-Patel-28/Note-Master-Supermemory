@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS captures (
     type TEXT NOT NULL CHECK (type IN ('text', 'voice', 'doc')),
     raw_content_ref TEXT,
     original_filename TEXT,
+    note TEXT,
     content TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'processing', 'indexed', 'failed')),

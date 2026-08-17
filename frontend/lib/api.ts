@@ -7,6 +7,7 @@ export interface Capture {
   content: string;
   raw_content_ref: string | null;
   original_filename: string | null;
+  note: string | null;
   status: CaptureStatus;
   error: string | null;
   sensitivity_tier: "none" | "moderate" | "high";
@@ -89,24 +90,32 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
     }),
-  createFile: (file: File, documentGroupId?: number) => {
+  createFile: (file: File, note?: string, documentGroupId?: number) => {
     const fd = new FormData();
     fd.append("file", file);
+    if (note) fd.append("note", note);
     const qs = documentGroupId !== undefined ? `?document_group_id=${documentGroupId}` : "";
     return http<Capture>(`/api/captures/file${qs}`, { method: "POST", body: fd });
   },
-  createAudio: (file: File) => {
+  createAudio: (file: File, note?: string) => {
     const fd = new FormData();
     fd.append("file", file);
+    if (note) fd.append("note", note);
     return http<Capture>("/api/captures/audio", { method: "POST", body: fd });
   },
   audioUrl: (id: number) => `${BASE}/api/captures/${id}/audio`,
   fileUrl: (id: number) => `${BASE}/api/captures/${id}/file`,
-  update: (id: number, content: string) =>
+  update: (id: number, content: string, note?: string) =>
     http<Capture>(`/api/captures/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(note !== undefined ? { note } : {}) }),
+    }),
+  updateNote: (id: number, note: string) =>
+    http<Capture>(`/api/captures/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
     }),
   remove: (id: number) => http<void>(`/api/captures/${id}`, { method: "DELETE" }),
   history: (groupId: number) => http<Capture[]>(`/api/captures/history/${groupId}`),
