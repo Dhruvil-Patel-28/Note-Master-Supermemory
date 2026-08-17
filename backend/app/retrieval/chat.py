@@ -43,9 +43,12 @@ def expand_hits(hits: list[dict], total_chars: int = _EXPAND_TOTAL_CHARS) -> lis
     Fusion dedupes to one snippet per capture, which truncates multi-chunk
     documents (resumes) to ~800 chars and hides the rest from the LLM. Small
     captures are sent in full; large ones keep their best chunk plus neighbors.
+    Chunks that are byte-identical to one already added (the same document
+    uploaded multiple times) are skipped so duplicates can't eat the budget.
     """
     expanded: list[dict] = []
     budget = total_chars
+    seen_chunks: set[str] = set()
     for h in hits:
         chunks = _chunks(h["capture_id"])
         if not chunks:
@@ -58,8 +61,11 @@ def expand_hits(hits: list[dict], total_chars: int = _EXPAND_TOTAL_CHARS) -> lis
             i = _best_chunk_index(chunks, h.get("snippet", ""))
             picks = chunks[max(0, i - 1) : i + 2]
         for c in picks:
+            if c in seen_chunks:
+                continue
             if budget <= 0:
                 break
+            seen_chunks.add(c)
             expanded.append({"capture_id": h["capture_id"], "snippet": c})
             budget -= len(c)
         if budget <= 0:
@@ -87,13 +93,14 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
         return NOT_FOUND_ANSWER, False, None
     if data.get("kind") == "not_found":
         return NOT_FOUND_ANSWER, False, None
-    answer = str(data.get("answer", "")).strip()
-    found = bool(answer) and answer != NOT_FOUND_ANSWER
+    answer = re.sub(r"</?b>", "", str(data.get("answer", "")).strip())
+    if not answer or answer == NOT_FOUND_ANSWER:
+        return NOT_FOUND_ANSWER, False, None
     if data.get("kind") == "fields":
         structured = {"kind": "fields", "fields": data.get("fields", [])}
     else:
         structured = {"kind": "prose", "fields": []}
-    return answer, found, structured
+    return answer, True, structured
 
 
 def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | None]:
@@ -106,6 +113,12 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         "You are a retrieval assistant. Answer ONLY from the retrieved context below. "
         "You must NEVER use your own knowledge. If the context does not contain the answer, "
         'reply with exactly this JSON and nothing else: {"kind": "not_found"}.\n'
+        "The context contains the user's own notes and documents. Treat statements in them as "
+        "facts about the user: for example, a note saying \"with my dog\" means the user has a dog, "
+        "and a note saying \"my PAN number is ABCDE1234F\" means that is the user's PAN. "
+        "Never answer 'Unknown' or 'no information' when the context directly supports an answer.\n"
+        "Example: Context: [1] (capture 2): I love running along Marine Drive with my dog. "
+        'Question: do I have a dog? Answer: {"kind": "prose", "answer": "Yes, you have a dog — you run along Marine Drive with it [1]."}\n'
         "When the question asks for specific facts or fields from a document (ID number, name, "
         'amount, date, etc.), reply with JSON in this shape: '
         '{"kind": "fields", "answer": "<one-line summary>", "fields": [{"key": "<field name>", "value": "<field value>"}]}. '
