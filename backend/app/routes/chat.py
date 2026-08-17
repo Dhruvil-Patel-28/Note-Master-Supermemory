@@ -53,10 +53,25 @@ def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
     return None
 
 
+_ACADEMIC_WORDS = {
+    "semester", "sem", "term", "trimester", "cgpa", "gpa", "marksheet",
+    "transcript", "grade", "grades", "result", "results", "course", "courses",
+    "academic", "marks", "score",
+}
+# Transcripts label semesters with bare digits ("2 / DIGITAL ELECTRONICS / ...")
+# — no "semester" word to match. Academic-intent queries get these doc-ish terms
+# appended to the FTS query so the transcript surfaces.
+_ACADEMIC_EXTRA_TERMS = ["transcript", "marksheet"]
+
+
 @router.post("", response_model=ChatResponse)
 def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
     query = scrub_injection(payload.query)
-    fts_hits = fts_search(query, limit=10, include_old_versions=payload.include_history)
+    query_words = set(re.findall(r"[a-z]+", query.lower()))
+    fts_query = query
+    if query_words & _ACADEMIC_WORDS:
+        fts_query = " ".join([query] + _ACADEMIC_EXTRA_TERMS)
+    fts_hits = fts_search(fts_query, limit=10, include_old_versions=payload.include_history)
     vector_hits = []
     try:
         vector_hits = vector.search(query, limit=10, include_old_versions=payload.include_history)

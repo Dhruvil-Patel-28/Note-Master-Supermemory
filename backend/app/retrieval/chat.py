@@ -251,6 +251,12 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         "Cite the source at the end of the summary like [1], [2].\n"
         'Example: Context: [1] (capture 20): CSL 102 DATA STRUCTURES, CSL 103 APPLICATION PROGRAMMING. '
         'Question: which courses did I do? Answer: {"kind": "fields", "answer": "You did 2 courses so far [1].", "fields": [{"key": "CSL 102", "value": "DATA STRUCTURES"}, {"key": "CSL 103", "value": "APPLICATION PROGRAMMING"}]}\n'
+        "Transcripts group courses by semester; each semester section starts with its label "
+        "(I, II, 2, III, IV, V, VI...) alone, followed by that semester's courses "
+        "(code, name, grade, credit). For 'semester N courses' questions, list ONLY the courses "
+        "in the section labeled exactly N — never digits inside course codes like CSL 202.\n"
+        'Example: Context: [1] (capture 20): 2 / DIGITAL ELECTRONICS / BB / 4 / CSL 102 / DATA STRUCTURES / BB / 4 / CSL 103 / APPLICATION PROGRAMMING / BC / 4 / HUL 101 / COMMUNICATION SKILLS / BC / 3 / BEL 101 / MECHANICS AND GRAPHICS / BB / 4 / Total / III / MAL 201 / NUMERICAL METHODS. '
+        'Question: my 2nd semester courses? Answer: {"kind": "fields", "answer": "Your 2nd semester courses are below [1].", "fields": [{"key": "ECL 102", "value": "DIGITAL ELECTRONICS"}, {"key": "CSL 102", "value": "DATA STRUCTURES"}, {"key": "CSL 103", "value": "APPLICATION PROGRAMMING"}, {"key": "HUL 101", "value": "COMMUNICATION SKILLS"}, {"key": "BEL 101", "value": "MECHANICS AND GRAPHICS"}]}\n'
         'Otherwise reply with JSON in this shape: {"kind": "prose", "answer": "<answer with citations like [1], [2]>"}.\n'
         f"\nRetrieved context:\n{context}"
     )

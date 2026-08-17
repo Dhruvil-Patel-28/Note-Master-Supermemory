@@ -45,6 +45,11 @@ def _correct_terms(conn, terms: list[str], include_old_versions: bool) -> dict[s
     """
     corrections: dict[str, list[str]] = {}
     for t in terms:
+        # Terms with digits ("2nd") are rarely typos of content words — their
+        # variants ("end") can be real words elsewhere ("end-to-end" in a
+        # resume) and flood the ranking.
+        if re.search(r"\d", t):
+            continue
         base = _term_count(conn, t, include_old_versions)
         found: list[str] = []
         for v in _edit_variants(t):
