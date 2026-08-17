@@ -152,6 +152,31 @@ def _semester_context(query: str, capture_ids: list[int]) -> str | None:
     return None
 
 
+_CGPA_WORDS = {"cgpa", "gpa"}
+_CGPA_RE = re.compile(r"CGPA\s*:?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+
+
+def _extract_cgpa(text: str) -> str | None:
+    m = _CGPA_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _cgpa_context(query: str, capture_ids: list[int]) -> str | None:
+    if not any(w in query.lower() for w in _CGPA_WORDS):
+        return None
+    for cid in capture_ids:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT content FROM captures WHERE id = ?", (cid,)
+            ).fetchone()
+        if not row or not row["content"]:
+            continue
+        value = _extract_cgpa(row["content"])
+        if value:
+            return f"Parsed transcript — CGPA: {value}"
+    return None
+
+
 def _chunks(capture_id: int) -> list[str]:
     with db.get_conn() as conn:
         rows = conn.execute(
@@ -338,6 +363,14 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
     sem_ctx = _semester_context(query, [h["capture_id"] for h in hits])
     if sem_ctx:
         context += f"\n\n{sem_ctx}"
+    cgpa_ctx = _cgpa_context(query, [h["capture_id"] for h in hits])
+    if cgpa_ctx:
+        # The exact value is already extracted — flooding the small model with
+        # the raw transcript dump makes it echo the context instead of
+        # answering (it hit the output cap mid-dump). Hand it just the fact.
+        context = f"[1] (capture {hits[0]['capture_id']}): {cgpa_ctx}"
+        if sem_ctx:
+            context += f"\n[1] (capture {hits[0]['capture_id']}): {sem_ctx}"
     system = (
         "You are a retrieval assistant. Answer ONLY from the retrieved context below. "
         "You must NEVER use your own knowledge. If the context does not contain the answer, "

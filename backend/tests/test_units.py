@@ -8,6 +8,7 @@ from app.ingestion.classify import classify
 from app.ingestion.extract import parse_response
 from app.retrieval.chat import (
     NOT_FOUND_ANSWER,
+    _extract_cgpa,
     _parse_response,
     _parse_transcript_sections,
     _semester_number,
@@ -153,6 +154,17 @@ class TestSemesterParser:
     def test_grade_missing_drops_course(self):
         text = "I\nMAL103 CALCULUS FOR ENGINEERS\nBB\n4\nCSL 101 COMPUTER PROGRAMMING"
         assert _parse_transcript_sections(text) == [(1, [("MAL103", "CALCULUS FOR ENGINEERS")])]
+
+
+class TestCgpaExtract:
+    def test_colon_on_own_line(self):
+        assert _extract_cgpa("Total\nCGPA\n:\n7.57\nGrand Total Credit") == "7.57"
+
+    def test_inline_colon(self):
+        assert _extract_cgpa("CGPA: 9.12") == "9.12"
+
+    def test_no_cgpa(self):
+        assert _extract_cgpa("MAL103 CALCULUS FOR ENGINEERS") is None
 
 
 class TestFusion:
