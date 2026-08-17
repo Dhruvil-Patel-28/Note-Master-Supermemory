@@ -63,6 +63,14 @@ class TestChatParse:
         answer, found, structured = _parse_response("the resume text is: name email phone ...")
         assert not found and answer == NOT_FOUND_ANSWER and structured is None
 
+    def test_bare_number_answer_returns_not_found_not_crash(self):
+        answer, found, structured = _parse_response("4")
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
+
+    def test_bare_array_answer_returns_not_found_not_crash(self):
+        answer, found, structured = _parse_response('["1"]')
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
+
     def test_trailing_citation_junk_inside_object_is_salvaged(self):
         answer, found, _ = _parse_response(
             '{"kind": "prose", "answer": "Your college name is IIIT Nagpur.", ["1"]}'

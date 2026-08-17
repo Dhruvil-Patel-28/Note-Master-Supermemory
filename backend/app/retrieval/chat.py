@@ -313,6 +313,10 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
             data["fields"] = _salvage_fields(text)
     if data is None:
         return NOT_FOUND_ANSWER, False, None
+    if not isinstance(data, dict):
+        # The model occasionally answers with a bare value ("4") or array
+        # instead of the JSON envelope — never crash the request on it.
+        return NOT_FOUND_ANSWER, False, None
     if data.get("kind") == "not_found":
         return NOT_FOUND_ANSWER, False, None
     answer = re.sub(r"</?b>", "", str(data.get("answer", "")).strip())
