@@ -134,7 +134,13 @@ def _parse_transcript_sections(text: str) -> list[tuple[int, list[tuple[str, str
     return [s for s in sections if s[1]]
 
 
-def _semester_context(query: str, capture_ids: list[int]) -> str | None:
+_ORDINALS = {
+    1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th",
+    6: "6th", 7: "7th", 8: "8th",
+}
+
+
+def _semester_data(query: str, capture_ids: list[int]) -> dict | None:
     num = _semester_number(query)
     if num is None:
         return None
@@ -147,9 +153,16 @@ def _semester_context(query: str, capture_ids: list[int]) -> str | None:
             continue
         for label, courses in _parse_transcript_sections(row["content"]):
             if label == num:
-                listing = "; ".join(f"{code} {name}" for code, name in courses)
-                return f"Parsed transcript — Semester {num}: {listing}"
+                return {"num": num, "courses": courses, "capture_id": cid}
     return None
+
+
+def _semester_context(query: str, capture_ids: list[int]) -> str | None:
+    data = _semester_data(query, capture_ids)
+    if data is None:
+        return None
+    listing = "; ".join(f"{code} {name}" for code, name in data["courses"])
+    return f"Parsed transcript — Semester {data['num']}: {listing}"
 
 
 _CGPA_WORDS = {"cgpa", "gpa"}
@@ -357,10 +370,20 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
 def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | None]:
     if not hits:
         return NOT_FOUND_ANSWER, False, None
+    capture_ids = [h["capture_id"] for h in hits]
+    sem_data = _semester_data(query, capture_ids)
+    if sem_data is not None:
+        # The exact course list is parsed in Python — the 3b model drops items
+        # from long lists (3rd sem came back with 2 of 6), so the answer is
+        # built here deterministically and the LLM is never asked to enumerate.
+        ordinal = _ORDINALS.get(sem_data["num"], f"{sem_data['num']}th")
+        answer = f"Your {ordinal} semester courses are below [1]."
+        fields = [{"key": code, "value": name} for code, name in sem_data["courses"]]
+        return answer, True, {"kind": "fields", "fields": fields}
     context = "\n".join(
         f"[{i + 1}] (capture {h['capture_id']}): {h['snippet']}" for i, h in enumerate(hits)
     )
-    sem_ctx = _semester_context(query, [h["capture_id"] for h in hits])
+    sem_ctx = _semester_context(query, capture_ids)
     if sem_ctx:
         context += f"\n\n{sem_ctx}"
     cgpa_ctx = _cgpa_context(query, [h["capture_id"] for h in hits])
