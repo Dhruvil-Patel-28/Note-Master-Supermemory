@@ -91,13 +91,19 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
             needs_pin=True,
         )
 
-    try:
-        answer, found, structured = grounded_answer(payload.query, context_hits)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"chat LLM unavailable (model '{settings.ollama_model}' on {settings.ollama_host}): {exc}",
-        ) from exc
+    show_doc = _find_document(payload.query, hits)
+    if show_doc:
+        answer = f"Here's your {show_doc.filename or 'document'} — opened in the preview."
+        found = True
+        structured = None
+    else:
+        try:
+            answer, found, structured = grounded_answer(payload.query, context_hits)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"chat LLM unavailable (model '{settings.ollama_model}' on {settings.ollama_host}): {exc}",
+            ) from exc
 
     with db.get_conn() as conn:
         conn.execute(
@@ -124,7 +130,7 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
             if structured
             else None
         ),
-        show_document=_find_document(payload.query, hits),
+        show_document=show_doc,
     )
 
 

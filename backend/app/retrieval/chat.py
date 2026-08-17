@@ -73,13 +73,21 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
         text = text.strip("`").strip()
         if text.startswith("json"):
             text = text[4:].strip()
+    data = None
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        return text, text != NOT_FOUND_ANSWER and text != f'"{NOT_FOUND_ANSWER}"', None
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                data = None
+    if data is None:
+        return NOT_FOUND_ANSWER, False, None
     if data.get("kind") == "not_found":
         return NOT_FOUND_ANSWER, False, None
-    answer = str(data.get("answer", text)).strip()
+    answer = str(data.get("answer", "")).strip()
     found = bool(answer) and answer != NOT_FOUND_ANSWER
     if data.get("kind") == "fields":
         structured = {"kind": "fields", "fields": data.get("fields", [])}

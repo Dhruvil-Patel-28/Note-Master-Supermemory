@@ -6,6 +6,7 @@ from app.guardrails import pin
 from app.ingestion.chunker import chunk_text
 from app.ingestion.classify import classify
 from app.ingestion.extract import parse_response
+from app.retrieval.chat import NOT_FOUND_ANSWER, _parse_response
 from app.retrieval.fusion import fuse
 
 
@@ -23,6 +24,39 @@ class TestChunker:
         assert len(chunks) > 1
         assert all(len(c) <= 800 for c in chunks)
         assert chunks[0][-100:] in chunks[1]
+
+
+class TestChatParse:
+    def test_valid_prose(self):
+        answer, found, structured = _parse_response('{"kind": "prose", "answer": "Two projects [1]."}')
+        assert found and answer == "Two projects [1]."
+        assert structured["kind"] == "prose"
+
+    def test_valid_fields(self):
+        answer, found, structured = _parse_response(
+            '{"kind": "fields", "answer": "PAN summary [1]", "fields": [{"key": "PAN", "value": "XXXX"}]}'
+        )
+        assert found and structured["kind"] == "fields"
+        assert structured["fields"][0]["key"] == "PAN"
+
+    def test_not_found(self):
+        answer, found, structured = _parse_response('{"kind": "not_found"}')
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
+
+    def test_code_fence_wrapped(self):
+        answer, found, _ = _parse_response('```json\n{"kind": "prose", "answer": "ok [1]"}\n```')
+        assert found and answer == "ok [1]"
+
+    def test_unparseable_raw_model_output_never_surfaces(self):
+        answer, found, structured = _parse_response(
+            'Sure! Here is the answer: {"kind": "prose", "answer": "recovered [1]"} and some trailing words'
+        )
+        assert found and answer == "recovered [1]"
+        assert structured["kind"] == "prose"
+
+    def test_total_junk_returns_not_found_not_raw_text(self):
+        answer, found, structured = _parse_response("the resume text is: name email phone ...")
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
 
 
 class TestFusion:
