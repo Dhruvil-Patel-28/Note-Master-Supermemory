@@ -149,6 +149,18 @@ def test_fts_typo_tolerance(client):
     assert any(h["capture_id"] == typo_cap["id"] for h in hits)
 
 
+def test_fts_or_fallback_prefers_multi_term_docs(client):
+    from app.retrieval.fts import search as fts_search
+
+    generic = create_text(client, "my aadhar number is 1234 and my name is dhruvil")
+    specific = create_text(
+        client, "transcript of indian institute of information technology with my college name listed"
+    )
+    hits = fts_search("college name zzzz-no-such-term")
+    assert hits[0]["capture_id"] == specific["id"], hits
+    assert hits[0]["snippet"].count("<b>") >= hits[1]["snippet"].count("<b>")
+
+
 @llm
 def test_edit_capture_reindexes(client):
     from app.retrieval.fts import search as fts_search

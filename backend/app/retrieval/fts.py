@@ -67,7 +67,7 @@ def search(query: str, limit: int = 10, include_old_versions: bool = False) -> l
     if not terms:
         return []
 
-    def run(match_expr: str) -> list[dict]:
+    def run(match_expr: str, limit: int, reorder: bool = False) -> list[dict]:
         sql = f"""
             SELECT c.id AS capture_id, snippet(captures_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
                    bm25(captures_fts) AS score
@@ -79,24 +79,32 @@ def search(query: str, limit: int = 10, include_old_versions: bool = False) -> l
         if not include_old_versions:
             sql += " AND c.is_latest = 1"
         sql += " ORDER BY score LIMIT ?"
-        params.append(limit)
+        params.append(limit * 3 if reorder else limit)
         try:
             with db.get_conn() as conn:
-                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+                rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
         except Exception:
             return []
+        if reorder:
+            # bm25 favors short docs, so a single generic term ("name") can
+            # outrank a doc matching several query terms — and drag a
+            # sensitive capture into the PIN gate. Prefer rows that match
+            # more distinct query terms, then bm25.
+            rows.sort(key=lambda r: (-r["snippet"].count("<b>"), r["score"]))
+            return rows[:limit]
+        return rows
 
-    hits = run(" AND ".join(f'"{t}"' for t in terms))
+    hits = run(" AND ".join(f'"{t}"' for t in terms), limit)
     if hits:
         return hits
     with db.get_conn() as conn:
         corrections = _correct_terms(conn, terms, include_old_versions)
     if not corrections:
-        return run(" OR ".join(f'"{t}"' for t in terms))
+        return run(" OR ".join(f'"{t}"' for t in terms), limit, reorder=len(terms) > 1)
     boosted = []
     for t in terms:
         expr = f'"{t}"'
         for v in corrections.get(t, [])[:3]:
             expr += f' OR "{v}"'
         boosted.append(f"({expr})")
-    return run(" OR ".join(boosted))
+    return run(" OR ".join(boosted), limit, reorder=len(terms) > 1)
