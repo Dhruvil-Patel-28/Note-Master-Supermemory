@@ -5,7 +5,7 @@ from ..config import settings
 from ..guardrails import pin
 from ..ingestion.extract import extract
 from ..retrieval import vector
-from ..retrieval.chat import grounded_answer
+from ..retrieval.chat import expand_hits, grounded_answer
 from ..retrieval.fts import search as fts_search
 from ..retrieval.fusion import fuse
 from ..schemas import (
@@ -39,6 +39,7 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
     except Exception:
         pass
     hits = fuse(fts_hits, vector_hits, graph_hits, limit=5)
+    context_hits = expand_hits(hits)
 
     tiers = _sensitivity_tiers([h["capture_id"] for h in hits])
     has_high = any(t == "high" for t in tiers.values())
@@ -59,7 +60,7 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
         )
 
     try:
-        answer, found, structured = grounded_answer(payload.query, hits)
+        answer, found, structured = grounded_answer(payload.query, context_hits)
     except Exception as exc:
         raise HTTPException(
             status_code=502,

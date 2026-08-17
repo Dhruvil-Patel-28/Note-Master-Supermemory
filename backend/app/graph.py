@@ -129,14 +129,21 @@ def search(
         if cid in seen:
             continue
         seen.add(cid)
-        hits.append({"capture_id": cid, "snippet": _snippet(cid), "score": 0.0})
+        hits.append({"capture_id": cid, "snippet": _snippet(cid, names), "score": 0.0})
     return hits[:limit]
 
 
-def _snippet(capture_id: int) -> str:
+def _snippet(capture_id: int, entity_names: list[str] | None = None) -> str:
     with db.get_conn() as conn:
-        row = conn.execute(
-            "SELECT text FROM capture_chunks WHERE capture_id = ? ORDER BY chunk_index LIMIT 1",
+        rows = conn.execute(
+            "SELECT text FROM capture_chunks WHERE capture_id = ? ORDER BY chunk_index",
             (capture_id,),
-        ).fetchone()
-    return row["text"][:300] if row else ""
+        ).fetchall()
+    texts = [r["text"] for r in rows]
+    if not texts:
+        return ""
+    if entity_names:
+        for text in texts:
+            if any(name.lower() in text.lower() for name in entity_names):
+                return text[:300]
+    return texts[0][:300]

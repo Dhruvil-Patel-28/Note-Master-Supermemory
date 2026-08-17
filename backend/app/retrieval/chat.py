@@ -1,14 +1,70 @@
 import json
+import re
 
 import ollama
 
+from .. import db
 from ..config import settings
 
 NOT_FOUND_ANSWER = "I don't have this in my notes."
 
+# Per-capture text below this size is sent to the LLM in full (resumes, notes);
+# larger documents keep their best-matching chunk plus neighbors.
+_EXPAND_CAPTURE_CHARS = 6000
+_EXPAND_TOTAL_CHARS = 14000
+_TAG_RE = re.compile(r"<[^>]+>")
+
 
 def _client() -> ollama.Client:
     return ollama.Client(host=settings.ollama_host)
+
+
+def _chunks(capture_id: int) -> list[str]:
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT text FROM capture_chunks WHERE capture_id = ? ORDER BY chunk_index",
+            (capture_id,),
+        ).fetchall()
+    return [r["text"] for r in rows]
+
+
+def _best_chunk_index(chunks: list[str], snippet: str) -> int:
+    needle = _TAG_RE.sub("", snippet or "")[:200].strip()
+    if needle:
+        for i, c in enumerate(chunks):
+            if needle in c:
+                return i
+    return 0
+
+
+def expand_hits(hits: list[dict], total_chars: int = _EXPAND_TOTAL_CHARS) -> list[dict]:
+    """Expand fused per-capture hits into per-chunk context entries.
+
+    Fusion dedupes to one snippet per capture, which truncates multi-chunk
+    documents (resumes) to ~800 chars and hides the rest from the LLM. Small
+    captures are sent in full; large ones keep their best chunk plus neighbors.
+    """
+    expanded: list[dict] = []
+    budget = total_chars
+    for h in hits:
+        chunks = _chunks(h["capture_id"])
+        if not chunks:
+            expanded.append(h)
+            continue
+        total = sum(len(c) for c in chunks)
+        if total <= _EXPAND_CAPTURE_CHARS:
+            picks = chunks
+        else:
+            i = _best_chunk_index(chunks, h.get("snippet", ""))
+            picks = chunks[max(0, i - 1) : i + 2]
+        for c in picks:
+            if budget <= 0:
+                break
+            expanded.append({"capture_id": h["capture_id"], "snippet": c})
+            budget -= len(c)
+        if budget <= 0:
+            break
+    return expanded
 
 
 def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
