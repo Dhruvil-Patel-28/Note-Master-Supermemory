@@ -281,8 +281,8 @@ query → parallel retrieval
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 64 tests, ~70–85s (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 43 tests, <1s, no Ollama needed
+uv run pytest tests                  # full suite: 75 tests, ~70–85s (real Ollama + whisper)
+uv run pytest tests -m "not llm"     # pure logic: 54 tests, <1s, no Ollama needed
 ```
 
 Quirks that matter if you touch the suite:
