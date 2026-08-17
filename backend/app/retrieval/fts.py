@@ -55,7 +55,11 @@ def _correct_terms(conn, terms: list[str], include_old_versions: bool) -> dict[s
 
 
 def search(query: str, limit: int = 10, include_old_versions: bool = False) -> list[dict]:
-    terms = [t for t in _SPECIAL.sub(" ", query).split() if t and t.lower() not in _STOPWORDS]
+    terms = [
+        t
+        for t in _SPECIAL.sub(" ", query).split()
+        if t and len(t) >= 2 and t.lower() not in _STOPWORDS
+    ]
     if not terms:
         return []
 

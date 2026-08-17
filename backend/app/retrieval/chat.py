@@ -119,8 +119,12 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         "Never answer 'Unknown' or 'no information' when the context directly supports an answer.\n"
         "The user's notes may contain typos (e.g. 'but' for 'buy', 'tomorroew' for 'tomorrow') — "
         "read them with that in mind.\n"
+        "When the question asks about 'anything', 'everything', or anything list-like, enumerate "
+        "ALL matching items from the context, never just one (e.g. both mangoes and batteries).\n"
         "Example: Context: [1] (capture 2): I love running along Marine Drive with my dog. "
         'Question: do I have a dog? Answer: {"kind": "prose", "answer": "Yes, you have a dog — you run along Marine Drive with it [1]."}\n'
+        'Example: Context: [1] (capture 3): i have to buy mangoes tomorrow. [2] (capture 13): remember to buy batteries for the remote. '
+        'Question: do I need to buy anything? Answer: {"kind": "prose", "answer": "Yes: you need to buy mangoes tomorrow [1] and batteries for the remote [2]."}\n'
         "When the question asks for specific facts or fields from a document (ID number, name, "
         'amount, date, etc.), reply with JSON in this shape: '
         '{"kind": "fields", "answer": "<one-line summary>", "fields": [{"key": "<field name>", "value": "<field value>"}]}. '
