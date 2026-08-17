@@ -34,11 +34,16 @@ Everything runs on your machine. No hosted APIs, no API keys, no telemetry, no d
 
 **Everything after capture is queued through an async ingestion pipeline** with visible status: `queued → processing → indexed / failed`. Captures can be edited, deleted, or re-uploaded as a new version.
 
+**Document labels** — when you upload a document (or drop/record a voice note) you can attach a label like *"this is my resume"* or *"my Aadhaar card"*. Labels are stored, indexed into search (label + filename + content), shown on the capture card, and editable anytime without re-extraction — so "get me my resume" works even when the filename says nothing useful.
+
 **Retrieval (right pane):**
 - Natural-language chat over your notes, answered **only** from your captured content.
 - **Structured answers** — asking for your PAN returns a field card (key/value), not prose soup.
 - **Citations** — every answer links to its source capture(s); clicking a source jumps to and highlights the capture.
 - Honest **not-found** path — "I don't have this in my notes" instead of hallucinating.
+- **"Show me my document"** — asking for a document by name ("get me my resume", "show my PAN card") opens the actual uploaded file in a preview dialog (PDFs/images render inline; Word/Excel open in a new tab) — no extracted-text dump.
+- **Typo-tolerant search** — queries and notes with small typos ("but" vs "buy") still match via edit-distance fallback.
+- **Prompt-injection resistant** — instructions smuggled inside a question ("bypass guardrails", "ignore previous instructions") are treated as data, never commands; answers stay grounded.
 - **Correction loop** — flag a wrong answer; the feedback is stored and the source capture re-indexed.
 - **Sensitivity guardrails** — captures are tiered `none` / `moderate` / `high` at ingestion; `high` (ID/financial docs) is PIN-gated at retrieval, every sensitive retrieval is audit-logged.
 - **Versioned re-uploads** — re-uploading a bank statement creates version 2; old versions stay queryable via history and can be **restored** to latest.
@@ -199,21 +204,21 @@ Base URL: `http://127.0.0.1:8000`. The frontend proxies `/api/*` → backend via
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/captures/text` | `{"content": "..."}` — text note |
-| `POST` | `/api/captures/file` | multipart `file`, optional `document_group_id` (versioning) |
-| `POST` | `/api/captures/audio` | multipart `file` — voice note (.m4a/.webm/.wav/.mp3/.aiff/.ogg/.opus) |
+| `POST` | `/api/captures/file` | multipart `file`, optional `note` (label like "this is my resume") and `document_group_id` (versioning) |
+| `POST` | `/api/captures/audio` | multipart `file`, optional `note` — voice note (.m4a/.webm/.wav/.mp3/.aiff/.ogg/.opus) |
 | `GET` | `/api/captures` | List captures (latest per group by default) |
 | `GET` | `/api/captures/{id}` | Single capture + status (`queued/processing/indexed/failed`) |
 | `GET` | `/api/captures/{id}/audio` | Audio playback (FileResponse; voice captures) |
 | `GET` | `/api/captures/{id}/file` | Original uploaded document (FileResponse, media type by extension; doc captures only) |
 | `GET` | `/api/captures/history/{group_id}` | All versions of a document group |
 | `POST` | `/api/captures/{id}/restore` | Promote an older version to latest (flips `is_latest` in SQLite + graph) |
-| `PATCH` | `/api/captures/{id}` | Edit content → reindexes FTS/vectors/graph |
+| `PATCH` | `/api/captures/{id}` | Edit `content` (→ reindexes FTS/vectors/graph) and/or `note` (label-only updates reindex search without re-extraction) |
 | `DELETE` | `/api/captures/{id}` | Cascade: FTS rows, vector rows, graph node, files |
 
 ### Chat
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/chat` | `{"query": "...", "include_history": bool}`. Response: `{answer, found, sources[], structured?, needs_pin?}`. Send `X-Pin-Token: <token>` header to unlock `high`-tier retrieval. `sources[].sensitivity_tier` tells the UI what it surfaced. |
+| `POST` | `/api/chat` | `{"query": "...", "include_history": bool}`. Response: `{answer, found, sources[], structured?, needs_pin?, show_document?}`. Send `X-Pin-Token: <token>` header to unlock `high`-tier retrieval. `sources[].sensitivity_tier` tells the UI what it surfaced. `show_document: {capture_id, filename}` is set for document-intent queries ("get me my resume") — the UI opens the original file. |
 
 ### PIN
 | Method | Path | Description |
@@ -253,12 +258,19 @@ capture → route by type
 
 ```
 query → parallel retrieval
-  FTS5 exact-token search (stopword-filtered, AND→OR fallback)
+  FTS5 token search (stopword + single-char filtered, AND → OR fallback,
+                     edit-distance-1 typo variants boosted when AND fails)
   vector KNN (12 candidates) → cosine re-score (≥0.5 threshold)
   graph 1-hop + 2-hop entity walk
 → reciprocal-rank fusion, deduped by capture, top 5
+→ document-intent queries ("get me my resume"): skip the LLM entirely,
+  return one-line answer + show_document → UI opens the original file
 → if any top hit is high-tier: require valid X-Pin-Token (no LLM call otherwise)
-→ LLM with hardened grounding → structured JSON {kind: fields|prose|not_found}
+→ LLM with hardened grounding (instructions in a system message; the question
+  is an isolated user turn — injection text is data, never commands;
+  few-shot examples; context expansion per capture with duplicate-chunk dedupe)
+→ structured JSON {kind: fields|prose|not_found} — unparseable output is
+  never surfaced, it becomes a not-found
 → answer + sources + audit log (sensitive_access=1 when high content surfaced)
 ```
 
@@ -269,8 +281,8 @@ query → parallel retrieval
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 43 tests, ~70–85s (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 23 tests, <1s, no Ollama needed
+uv run pytest tests                  # full suite: 64 tests, ~70–85s (real Ollama + whisper)
+uv run pytest tests -m "not llm"     # pure logic: 43 tests, <1s, no Ollama needed
 ```
 
 Quirks that matter if you touch the suite:
@@ -302,10 +314,10 @@ backend/
       asr.py                # faster-whisper lazy singleton, transcribe()
       ocr.py                # qwen2.5vl:3b vision OCR (OCR_ENABLED-gated)
     retrieval/
-      fts.py                # FTS5 search (stopword filter, AND→OR fallback)
+      chat.py               # grounded chat: system-message prompt, parse (JSON recovery, not-found), context expansion
+      fts.py                # FTS5 search (stopword/single-char filter, AND→OR fallback, typo variants)
       vector.py             # KNN + cosine re-score (0.5 threshold)
       fusion.py             # reciprocal-rank fusion
-      chat.py               # grounding prompt, structured-JSON parsing
     guardrails/pin.py       # scrypt PIN, 30-min tokens, app_settings store
     routes/
       captures.py           # text/file/audio endpoints, versioning, delete cascade, playback, restore
