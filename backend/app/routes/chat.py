@@ -7,7 +7,7 @@ from ..config import settings
 from ..guardrails import pin
 from ..ingestion.extract import extract
 from ..retrieval import vector
-from ..retrieval.chat import expand_hits, grounded_answer
+from ..retrieval.chat import expand_hits, grounded_answer, scrub_injection
 from ..retrieval.fts import search as fts_search
 from ..retrieval.fusion import fuse
 from ..schemas import (
@@ -55,15 +55,16 @@ def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
 
 @router.post("", response_model=ChatResponse)
 def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
-    fts_hits = fts_search(payload.query, limit=10, include_old_versions=payload.include_history)
+    query = scrub_injection(payload.query)
+    fts_hits = fts_search(query, limit=10, include_old_versions=payload.include_history)
     vector_hits = []
     try:
-        vector_hits = vector.search(payload.query, limit=10, include_old_versions=payload.include_history)
+        vector_hits = vector.search(query, limit=10, include_old_versions=payload.include_history)
     except Exception:
         pass
     graph_hits = []
     try:
-        entities = extract(payload.query)["entities"]
+        entities = extract(query)["entities"]
         graph_hits = graph.search(
             [e["name"] for e in entities],
             include_old_versions=payload.include_history,
@@ -91,14 +92,14 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
             needs_pin=True,
         )
 
-    show_doc = _find_document(payload.query, hits)
+    show_doc = _find_document(query, hits)
     if show_doc:
         answer = f"Here's your {show_doc.filename or 'document'} — opened in the preview."
         found = True
         structured = None
     else:
         try:
-            answer, found, structured = grounded_answer(payload.query, context_hits)
+            answer, found, structured = grounded_answer(query, context_hits)
         except Exception as exc:
             raise HTTPException(
                 status_code=502,

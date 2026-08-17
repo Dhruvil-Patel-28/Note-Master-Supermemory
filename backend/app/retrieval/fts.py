@@ -8,6 +8,10 @@ _STOPWORDS = {
     "he", "i", "in", "is", "it", "its", "me", "much", "my", "of", "on",
     "or", "that", "the", "this", "to", "was", "we", "were", "what", "will",
     "with", "you", "your",
+    "about", "any", "can", "could", "did", "do", "does", "get", "going",
+    "here", "how", "just", "know", "like", "please", "say", "said", "should",
+    "show", "tell", "there", "want", "when", "where", "which", "who", "why",
+    "would",
 }
 
 
