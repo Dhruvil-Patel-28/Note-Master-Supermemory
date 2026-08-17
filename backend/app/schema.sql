@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS captures (
     user_id INTEGER REFERENCES users(id),
     type TEXT NOT NULL CHECK (type IN ('text', 'voice', 'doc')),
     raw_content_ref TEXT,
+    original_filename TEXT,
     content TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'processing', 'indexed', 'failed')),

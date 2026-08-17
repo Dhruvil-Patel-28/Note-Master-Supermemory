@@ -47,14 +47,15 @@ def create_capture(
     type_: str,
     content: str = "",
     raw_content_ref: str = None,
+    original_filename: str = None,
     document_group_id: int = None,
     user_id: int = None,
 ) -> int:
     with db.get_conn() as conn:
         if document_group_id is None:
             cur = conn.execute(
-                "INSERT INTO captures (type, content, raw_content_ref, user_id) VALUES (?, ?, ?, ?)",
-                (type_, content, raw_content_ref, user_id),
+                "INSERT INTO captures (type, content, raw_content_ref, original_filename, user_id) VALUES (?, ?, ?, ?, ?)",
+                (type_, content, raw_content_ref, original_filename, user_id),
             )
             capture_id = cur.lastrowid
             conn.execute(
@@ -72,9 +73,9 @@ def create_capture(
         ).fetchone()[0] + 1
         cur = conn.execute(
             """INSERT INTO captures
-               (type, content, raw_content_ref, status, document_group_id, version_number, is_latest, user_id)
-               VALUES (?, ?, ?, 'queued', ?, ?, 1, ?)""",
-            (type_, content, raw_content_ref, document_group_id, version, user_id),
+               (type, content, raw_content_ref, original_filename, status, document_group_id, version_number, is_latest, user_id)
+               VALUES (?, ?, ?, ?, 'queued', ?, ?, 1, ?)""",
+            (type_, content, raw_content_ref, original_filename, document_group_id, version, user_id),
         )
         return cur.lastrowid
 
@@ -110,10 +111,13 @@ def _extract_and_index(capture_id: int) -> None:
             "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ? WHERE id = ?",
             (content, classify(content), capture_id),
         )
+        fts_text = content
+        if row["original_filename"]:
+            fts_text = f"{row['original_filename']}\n{content}"
         conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
         conn.execute(
             "INSERT INTO captures_fts (rowid, content) VALUES (?, ?)",
-            (capture_id, content),
+            (capture_id, fts_text),
         )
         _write_chunks(conn, capture_id, content)
         _write_graph(conn, capture_id, content)

@@ -6,6 +6,7 @@ export interface Capture {
   type: CaptureType;
   content: string;
   raw_content_ref: string | null;
+  original_filename: string | null;
   status: CaptureStatus;
   error: string | null;
   sensitivity_tier: "none" | "moderate" | "high";
@@ -94,6 +95,7 @@ export const api = {
     return http<Capture>("/api/captures/audio", { method: "POST", body: fd });
   },
   audioUrl: (id: number) => `${BASE}/api/captures/${id}/audio`,
+  fileUrl: (id: number) => `${BASE}/api/captures/${id}/file`,
   update: (id: number, content: string) =>
     http<Capture>(`/api/captures/${id}`, {
       method: "PATCH",

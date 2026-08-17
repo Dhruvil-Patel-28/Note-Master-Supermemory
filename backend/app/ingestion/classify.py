@@ -44,12 +44,16 @@ _MODERATE_KEYWORDS = [
 ]
 
 
+def _has_keyword(text: str, keywords: list[str]) -> bool:
+    return any(re.search(rf"\b{re.escape(k)}\b", text) for k in keywords)
+
+
 def classify(content: str) -> str:
     text = (content or "").lower()
     if _PAN_RE.search(content or "") or _AADHAAR_RE.search(content or "") or _ACCOUNT_RE.search(content or ""):
         return "high"
-    if any(k in text for k in _ID_KEYWORDS) or any(k in text for k in _FINANCIAL_KEYWORDS):
+    if _has_keyword(text, _ID_KEYWORDS) or _has_keyword(text, _FINANCIAL_KEYWORDS):
         return "high"
-    if any(k in text for k in _MODERATE_KEYWORDS):
+    if _has_keyword(text, _MODERATE_KEYWORDS):
         return "moderate"
     return "none"

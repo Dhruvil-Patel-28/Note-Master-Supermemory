@@ -37,6 +37,13 @@ export default function Home() {
     setTab("captures");
   }, []);
 
+  const onOpenFile = useCallback((id: number) => {
+    const cap = captures.find((c) => c.id === id);
+    if (cap?.type === "doc" && cap.raw_content_ref) {
+      window.open(api.fileUrl(id), "_blank");
+    }
+  }, [captures]);
+
   return (
     <div className="flex h-dvh flex-col">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b px-3 sm:px-4">
@@ -97,7 +104,7 @@ export default function Home() {
               Answers only from your notes
             </p>
           </div>
-          <ChatPane onSourceClick={onSourceClick} />
+          <ChatPane captures={captures} onSourceClick={onSourceClick} onOpenFile={onOpenFile} />
         </section>
       </div>
 

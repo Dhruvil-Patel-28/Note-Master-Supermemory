@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Eye,
   FileText,
   History,
   Loader2,
@@ -317,6 +318,16 @@ function CaptureItem({
             <Button variant="ghost" size="icon-sm" title="Edit" onClick={onEdit}>
               <Pencil />
             </Button>
+            {cap.type === "doc" && cap.raw_content_ref && cap.status === "indexed" && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Open original file"
+                onClick={() => window.open(api.fileUrl(cap.id), "_blank")}
+              >
+                <Eye />
+              </Button>
+            )}
             <DeleteDialog cap={cap} onDeleted={onChanged} />
           </div>
         </div>
@@ -324,7 +335,14 @@ function CaptureItem({
           {cap.type === "doc" ? (
             <span className="flex gap-1.5">
               <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-              <span>{cap.content.slice(0, 200)}</span>
+              <span>
+                {cap.original_filename && (
+                  <span className="mr-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                    {cap.original_filename}
+                  </span>
+                )}
+                {cap.content.slice(0, 200)}
+              </span>
             </span>
           ) : (
             cap.content

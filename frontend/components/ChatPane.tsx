@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Copy,
   Check,
+  ExternalLink,
   Flag,
   Lock,
   RotateCw,
@@ -12,7 +13,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, ChatResponse, ChatSource } from "@/lib/api";
+import { api, Capture, ChatResponse, ChatSource } from "@/lib/api";
 import Markdown from "@/components/markdown";
 import FeedbackDialog from "@/components/feedback-dialog";
 import { Button } from "@/components/ui/button";
@@ -50,10 +51,14 @@ let nextId = 1;
 
 function SourceChip({
   s,
+  hasFile,
   onClick,
+  onOpenFile,
 }: {
   s: ChatSource;
+  hasFile?: boolean;
   onClick: () => void;
+  onOpenFile?: () => void;
 }) {
   return (
     <button
@@ -61,7 +66,7 @@ function SourceChip({
       onClick={onClick}
       title={s.snippet.replace(/<[^>]+>/g, "")}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors hover:bg-muted",
+        "group inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors hover:bg-muted",
         s.sensitivity_tier === "high" &&
           "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20",
         s.sensitivity_tier === "moderate" &&
@@ -73,6 +78,19 @@ function SourceChip({
       {s.sensitivity_tier === "high" && <Lock className="size-3" />}
       {s.sensitivity_tier === "moderate" && <TriangleAlert className="size-3" />}
       capture #{s.capture_id}
+      {hasFile && (
+        <span
+          role="button"
+          title="Open original document"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenFile?.();
+          }}
+          className="ml-0.5 rounded-full p-0.5 opacity-60 transition-opacity hover:bg-foreground/10 hover:opacity-100"
+        >
+          <ExternalLink className="size-3" />
+        </span>
+      )}
     </button>
   );
 }
@@ -111,11 +129,15 @@ function FieldCard({ fields }: { fields: { key: string; value: string }[] }) {
 
 function AssistantMessage({
   m,
+  captures,
   onSourceClick,
+  onOpenFile,
   onFlag,
 }: {
   m: Message;
+  captures: Capture[];
   onSourceClick: (id: number) => void;
+  onOpenFile: (id: number) => void;
   onFlag: (m: Message) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -149,13 +171,18 @@ function AssistantMessage({
         )}
         {m.sources && m.sources.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {m.sources.map((s) => (
-              <SourceChip
-                key={s.capture_id}
-                s={s}
-                onClick={() => onSourceClick(s.capture_id)}
-              />
-            ))}
+            {m.sources.map((s) => {
+              const cap = captures.find((c) => c.id === s.capture_id);
+              return (
+                <SourceChip
+                  key={s.capture_id}
+                  s={s}
+                  hasFile={cap?.type === "doc" && !!cap.raw_content_ref}
+                  onClick={() => onSourceClick(s.capture_id)}
+                  onOpenFile={() => onOpenFile(s.capture_id)}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -253,9 +280,13 @@ function PinDialog({
 }
 
 export default function ChatPane({
+  captures,
   onSourceClick,
+  onOpenFile,
 }: {
+  captures: Capture[];
   onSourceClick?: (captureId: number) => void;
+  onOpenFile?: (captureId: number) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -356,7 +387,9 @@ export default function ChatPane({
               <AssistantMessage
                 key={m.id}
                 m={m}
+                captures={captures}
                 onSourceClick={(id) => onSourceClick?.(id)}
+                onOpenFile={(id) => onOpenFile?.(id)}
                 onFlag={(msg) => setFeedbackMsg(msg)}
               />
             )

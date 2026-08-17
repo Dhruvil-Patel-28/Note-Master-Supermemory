@@ -37,7 +37,11 @@ def get_conn():
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
-        try:
-            conn.execute("ALTER TABLE capture_chunks ADD COLUMN embedding BLOB")
-        except sqlite3.OperationalError:
-            pass
+        for col, ddl in {
+            "embedding": "ALTER TABLE capture_chunks ADD COLUMN embedding BLOB",
+            "original_filename": "ALTER TABLE captures ADD COLUMN original_filename TEXT",
+        }.items():
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass

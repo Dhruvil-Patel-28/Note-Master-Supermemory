@@ -155,6 +155,12 @@ class TestClassify:
         assert classify("Goa trip was in December with friends") == "none"
         assert classify("remember to buy milk") == "none"
 
+    def test_keywords_match_words_not_substrings(self):
+        assert classify("Skilled in Pandas and NumPy for data pipelines") == "none"
+        assert classify("handled the tax returns for the firm") == "high"
+        assert classify("shared my PAN card copy") == "high"
+        assert classify("meeting notes for the sprint") == "moderate"
+
     def test_empty(self):
         assert classify("") == "none"
         assert classify("   ") == "none"

@@ -18,6 +18,7 @@ def _to_out(row) -> CaptureOut:
         type=row["type"],
         content=row["content"],
         raw_content_ref=row["raw_content_ref"],
+        original_filename=row["original_filename"],
         status=row["status"],
         error=row["error"],
         sensitivity_tier=row["sensitivity_tier"],
@@ -63,7 +64,9 @@ def create_file_capture(
     if not data:
         raise HTTPException(status_code=422, detail="empty file")
     rel = storage.save_upload(file.filename, data)
-    capture_id = create_capture("doc", raw_content_ref=rel, document_group_id=document_group_id)
+    capture_id = create_capture(
+        "doc", raw_content_ref=rel, original_filename=file.filename, document_group_id=document_group_id
+    )
     schedule_ingest(background, capture_id)
     return _to_out(_get_capture(capture_id))
 
@@ -83,7 +86,7 @@ def create_audio_capture(background: BackgroundTasks, file: UploadFile = File(..
     if not data:
         raise HTTPException(status_code=422, detail="empty file")
     rel = storage.save_upload(file.filename, data)
-    capture_id = create_capture("voice", raw_content_ref=rel)
+    capture_id = create_capture("voice", raw_content_ref=rel, original_filename=file.filename)
     schedule_ingest(background, capture_id)
     return _to_out(_get_capture(capture_id))
 
@@ -175,6 +178,34 @@ def get_audio(capture_id: int):
         raise HTTPException(status_code=404, detail="audio file missing")
     media_type = {".m4a": "audio/mp4", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".aiff": "audio/aiff"}.get(path.suffix.lower(), "audio/webm")
     return FileResponse(path, media_type=media_type)
+
+
+_FILE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".tiff": "image/tiff",
+    ".bmp": "image/bmp",
+}
+
+
+@router.get("/{capture_id}/file")
+def get_original_file(capture_id: int):
+    row = _get_capture(capture_id)
+    if row["type"] != "doc" or not row["raw_content_ref"]:
+        raise HTTPException(status_code=404, detail="no original file for this capture")
+    path = Path(storage.resolve_path(row["raw_content_ref"]))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="file missing from disk")
+    return FileResponse(path, media_type=_FILE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"))
 
 
 @router.get("/history/{document_group_id}", response_model=list[CaptureOut])

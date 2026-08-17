@@ -204,6 +204,7 @@ Base URL: `http://127.0.0.1:8000`. The frontend proxies `/api/*` → backend via
 | `GET` | `/api/captures` | List captures (latest per group by default) |
 | `GET` | `/api/captures/{id}` | Single capture + status (`queued/processing/indexed/failed`) |
 | `GET` | `/api/captures/{id}/audio` | Audio playback (FileResponse; voice captures) |
+| `GET` | `/api/captures/{id}/file` | Original uploaded document (FileResponse, media type by extension; doc captures only) |
 | `GET` | `/api/captures/history/{group_id}` | All versions of a document group |
 | `POST` | `/api/captures/{id}/restore` | Promote an older version to latest (flips `is_latest` in SQLite + graph) |
 | `PATCH` | `/api/captures/{id}` | Edit content → reindexes FTS/vectors/graph |
