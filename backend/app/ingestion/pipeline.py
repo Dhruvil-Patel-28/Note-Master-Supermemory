@@ -3,6 +3,7 @@ import array
 import logging
 
 from .. import db, graph, storage
+from ..memory.sync import sync_capture
 from .asr import transcribe
 from .chunker import chunk_text
 from .classify import classify
@@ -141,3 +142,4 @@ def _extract_and_index(capture_id: int) -> None:
         rebuild_fts(capture_id, conn)
         _write_chunks(conn, capture_id, content)
         _write_graph(conn, capture_id, content)
+    sync_capture(capture_id)

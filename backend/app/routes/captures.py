@@ -142,6 +142,9 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
 @router.delete("/{capture_id}", status_code=204)
 def delete_capture(capture_id: int):
     row = _get_capture(capture_id)
+    from ..memory.sync import forget_capture
+
+    forget_capture(capture_id)
     graph.delete_capture(capture_id)
     with db.get_conn() as conn:
         conn.execute(
@@ -185,6 +188,9 @@ def restore_capture(capture_id: int):
             (capture_id,),
         )
     graph.restore_capture(capture_id, group_ids)
+    from ..memory.sync import sync_capture
+
+    sync_capture(capture_id)
     return _to_out(_get_capture(capture_id))
 
 

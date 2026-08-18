@@ -5,6 +5,7 @@ import pytest
 
 os.environ["NOTE_MASTER_DATA_DIR"] = tempfile.mkdtemp(prefix="note_master_test_")
 os.environ["OCR_ENABLED"] = "0"
+os.environ["MEMORY_ENABLED"] = "0"
 
 
 @pytest.fixture()

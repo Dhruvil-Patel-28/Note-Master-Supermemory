@@ -18,6 +18,7 @@ def connect() -> sqlite3.Connection:
     conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 
@@ -41,6 +42,7 @@ def init_db() -> None:
             "embedding": "ALTER TABLE capture_chunks ADD COLUMN embedding BLOB",
             "original_filename": "ALTER TABLE captures ADD COLUMN original_filename TEXT",
             "note": "ALTER TABLE captures ADD COLUMN note TEXT",
+            "memory_doc_ids": "ALTER TABLE captures ADD COLUMN memory_doc_ids TEXT",
         }.items():
             try:
                 conn.execute(ddl)
