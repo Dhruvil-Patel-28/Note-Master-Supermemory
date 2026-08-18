@@ -14,6 +14,10 @@ class Settings:
     ocr_enabled: bool = os.getenv("OCR_ENABLED", "0") == "1"
     ocr_model: str = os.getenv("OCR_MODEL", "qwen2.5vl:3b")
     asr_model: str = os.getenv("ASR_MODEL", "base")
+    memory_enabled: bool = os.getenv("MEMORY_ENABLED", "1") == "1"
+    memory_url: str = os.getenv("MEMORY_URL", "http://127.0.0.1:6767")
+    memory_api_key: str = os.getenv("MEMORY_API_KEY", "")
+    memory_container_tag: str = os.getenv("MEMORY_CONTAINER_TAG", "user_main")
 
     @property
     def db_path(self) -> Path:
