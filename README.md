@@ -109,6 +109,8 @@ All scope decisions were resolved in `PLAN.md` (§3.5, §3.7) before build. The 
 | Sensitivity classifier | **Pure rules, no LLM** *(deviation from PLAN's "rule-based + ML/LLM classifier")* | Deterministic, instant, free: PAN/Aadhaar/account-number regexes + ID/financial keyword lists → `high`; meeting/doctor/address/phone keywords → `moderate`; else `none`. An LLM classifier adds cost and nondeterminism for zero correctness gain on known doc types. |
 | Chat + entity-extraction model | **`llama3.2:3b` (~2GB, sub-second answers, ~1–3s extraction)** *(deviation from the originally picked qwen3:8b)* | **Measured: qwen3 models (8b AND 4b) are pathologically slow at JSON generation on this Mac — 19–150s per call.** The 3b model passes all grounding + structured-card tests and keeps the machine responsive. Overridable via `OLLAMA_MODEL` / `OLLAMA_EXTRACT_MODEL` (qwen3:8b and hermes3 remain installed). |
 | Grounding prompt | **"You must NEVER use your own knowledge" + `think: false` + temperature 0.1** | Small models ignore weaker wording ("only answer from context") — the hardened phrasing is what makes the not-found path and PIN gate hold. |
+| Intent layer | **Query classified before retrieval (`notes`/`code`/`general`/`hybrid`/`unknown`); `code`/`general` → clean refusal** *(post-Phase-4)* | Code and general-knowledge questions used to produce garbage from the notes-cage (e.g. "print my name in python" → `print(`). Now a one-call 3b classifier routes them to a deterministic "I can only answer about your notes" refusal with zero retrieval — nothing sensitive is ever touched. A `general` verdict is downgraded to `notes` whenever the question concerns the user ("my", "do i") unless code hints win, because the small classifier over-answers "general". |
+| Stuck-expansion | **When retrieval comes back empty/thin, the LLM picks anchor words from the user's actual vocabulary (per-capture sampled) and FTS re-runs with them** *(post-Phase-4)* | The general cure for lexical gaps — "where do i study" fails because notes say "institute", never "study". Instead of per-case augmentation lists, one mechanism: `_vocabulary()` samples the distinctive words of the latest captures, the 3b picks related ones, they re-enter retrieval, and prompt inference rules ("an institute in the docs is where the user studies") + a few-shot example complete the answer. |
 | Embeddings | **`nomic-embed-text` via local Ollama (768-dim)** | Free, local, good enough for personal-note semantic search. |
 | Vector honesty | **KNN fetches 12 candidates, cosine re-scores in Python, `MIN_COSINE_DISTANCE = 0.5`** | sqlite-vec 0.1.9 can't SELECT stored vectors back, so the embedding is denormalized as a BLOB into `capture_chunks` at index time and re-scored at query time. Unrelated hits are dropped so the PIN gate and the not-found path stay honest (without it, an unrelated query in a DB of only high-tier docs would misfire the PIN gate). |
 | FTS query building | **Punctuation stripped + small stopword list before AND-then-OR fallback** | Without stopword filtering, the OR fallback matched common words like "is" and the PIN gate misfired on genuinely unrelated queries — found and fixed during Phase 4 testing. |
@@ -281,8 +283,8 @@ query → parallel retrieval
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 75 tests, ~70–85s (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 54 tests, <1s, no Ollama needed
+uv run pytest tests                  # full suite: 93 tests, ~2.5min (real Ollama + whisper)
+uv run pytest tests -m "not llm"     # pure logic: 68 tests, <15s, no Ollama needed
 ```
 
 Quirks that matter if you touch the suite:

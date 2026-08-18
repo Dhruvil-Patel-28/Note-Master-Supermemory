@@ -216,11 +216,78 @@ def test_edit_capture_reindexes(client):
 @llm
 def test_grounded_not_found(client):
     create_text(client, "My PAN number is ABCDE1234F")
-    r = client.post("/chat", json={"query": "How much is 2+2?"})
+    r = client.post("/chat", json={"query": "do i own a zebra"})
     assert r.status_code == 200
     body = r.json()
     assert body["found"] is False
     assert body["answer"] == "I don't have this in my notes."
+
+
+@llm
+def test_general_knowledge_question_refused_cleanly(client):
+    from app.retrieval.intent import REFUSAL_ANSWER
+
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "How much is 2+2?"})
+        assert r.status_code == 200
+        body = r.json()
+        if body["answer"] == REFUSAL_ANSWER:
+            break
+    assert body["found"] is False
+    assert body["answer"] == REFUSAL_ANSWER
+    assert body["sources"] == []
+
+
+@llm
+def test_code_questions_refused_cleanly(client):
+    from app.retrieval.intent import REFUSAL_ANSWER
+
+    for q in (
+        "please print my name in python helloworld syntax",
+        "write a function to reverse a string",
+    ):
+        body = None
+        for _ in range(3):
+            r = client.post("/chat", json={"query": q})
+            assert r.status_code == 200
+            body = r.json()
+            if body["answer"] == REFUSAL_ANSWER:
+                break
+        assert body["found"] is False, body
+        assert body["answer"] == REFUSAL_ANSWER, body
+        assert body["sources"] == []
+
+
+@llm
+def test_concept_questions_answered_via_expansion_and_inference(client):
+    create_text(
+        client,
+        "Education / Indian Institute of Information Technology (IIIT), Nagpur / B.Tech in Computer Science",
+    )
+    create_text(client, "i work at Adapt Nova")
+
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "where do i study"})
+        assert r.status_code == 200
+        body = r.json()
+        if body["found"] and any(
+            w in body["answer"].lower() for w in ("iit", "nagpur", "information technology")
+        ):
+            break
+    assert body["found"], body
+    assert any(w in body["answer"].lower() for w in ("iit", "nagpur", "information technology"))
+
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "where do i work"})
+        assert r.status_code == 200
+        body = r.json()
+        if body["found"] and "adapt nova" in body["answer"].lower():
+            break
+    assert body["found"], body
+    assert "adapt nova" in body["answer"].lower()
 
 
 @llm

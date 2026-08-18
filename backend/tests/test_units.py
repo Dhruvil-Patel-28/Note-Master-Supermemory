@@ -112,6 +112,78 @@ class TestChatParse:
         assert scrub_injection("get me my resume") == "get me my resume"
 
 
+class TestIntentClassifier:
+    def test_parse_whitelists_intents_and_rejects_junk(self):
+        from app.retrieval.intent import _parse_intent
+
+        assert _parse_intent('{"intent": "code"}') == "code"
+        assert _parse_intent('sure! {"intent": "general"} trailing words') == "general"
+        assert _parse_intent('{"intent": "banana"}') is None
+        assert _parse_intent("total junk") is None
+
+    def test_llm_failure_falls_back_to_notes(self, monkeypatch):
+        from app.retrieval import intent
+
+        def boom(*a, **k):
+            raise RuntimeError("no ollama")
+
+        monkeypatch.setattr(intent, "_client", boom)
+        assert intent.classify("which were my 2nd sem courses") == "notes"
+
+    def test_code_hint_fallback_when_llm_unavailable(self, monkeypatch):
+        from app.retrieval import intent
+
+        def boom(*a, **k):
+            raise RuntimeError("no ollama")
+
+        monkeypatch.setattr(intent, "_client", boom)
+        assert intent.classify("please print my name in python helloworld syntax") == "code"
+        assert intent.classify("write a function to reverse a string") == "code"
+        assert intent.classify("what is my pan number") == "notes"
+
+    def test_llm_output_is_salvaged_not_overridden(self, monkeypatch):
+        from app.retrieval import intent
+
+        class Stub:
+            def __init__(self, raw):
+                self.raw = raw
+
+            def chat(self, **kw):
+                return {"message": {"content": self.raw}}
+
+        monkeypatch.setattr(intent, "_client", lambda: Stub('here it is: {"intent": "general"}'))
+        assert intent.classify("print my name") == "general"
+
+
+class TestAnchorValidation:
+    def test_anchor_validation_filters_junk(self, monkeypatch):
+        from app.ingestion.pipeline import create_capture, rebuild_fts
+        from app.routes import chat as chat_routes
+
+        cap = create_capture("text", content="batteries mangoes institute college")
+        rebuild_fts(cap)
+
+        class Stub:
+            def chat(self, **kw):
+                return {
+                    "message": {
+                        "content": '{"terms": ["institute", "zzzghost", "a", "2nd", "and", "institute"]}'
+                    }
+                }
+
+        monkeypatch.setattr(chat_routes, "_client", lambda: Stub())
+        assert chat_routes._expand_anchors("where do i study") == ["institute"]
+
+    def test_anchor_llm_failure_returns_empty(self, monkeypatch):
+        from app.routes import chat as chat_routes
+
+        def boom(*a, **k):
+            raise RuntimeError("no ollama")
+
+        monkeypatch.setattr(chat_routes, "_client", boom)
+        assert chat_routes._expand_anchors("where do i study") == []
+
+
 class TestSemesterParser:
     def test_semester_number_detection(self):
         assert _semester_number("give me my 6th sem courses") == 6

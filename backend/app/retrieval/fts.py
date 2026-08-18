@@ -15,7 +15,9 @@ _STOPWORDS = {
 }
 
 
-def _term_count(conn, term: str, include_old_versions: bool) -> int:
+def term_count(conn, term: str, include_old_versions: bool) -> int:
+    """Number of captures whose FTS index contains `term` — used to validate
+    typo variants and LLM-generated expansion anchors against the real index."""
     sql = "SELECT COUNT(*) AS n FROM captures_fts"
     if not include_old_versions:
         sql += " JOIN captures c ON c.id = captures_fts.rowid WHERE c.is_latest = 1"
@@ -50,12 +52,12 @@ def _correct_terms(conn, terms: list[str], include_old_versions: bool) -> dict[s
         # resume) and flood the ranking.
         if re.search(r"\d", t):
             continue
-        base = _term_count(conn, t, include_old_versions)
+        base = term_count(conn, t, include_old_versions)
         found: list[str] = []
         for v in _edit_variants(t):
             if not v or len(v) < 2 or v in terms or v.lower() in _STOPWORDS:
                 continue
-            n = _term_count(conn, v, include_old_versions)
+            n = term_count(conn, v, include_old_versions)
             if n > 0 and n >= base:
                 found.append(v)
         if found:
