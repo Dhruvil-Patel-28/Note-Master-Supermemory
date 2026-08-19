@@ -7,9 +7,9 @@ import {
   ExternalLink,
   FileText,
   Flag,
-  Lock,
   RotateCw,
   Send,
+  ShieldAlert,
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
@@ -76,7 +76,7 @@ function SourceChip({
           "border-primary/30 bg-primary/10 text-primary hover:bg-primary/20"
       )}
     >
-      {s.sensitivity_tier === "high" && <Lock className="size-3" />}
+      {s.sensitivity_tier === "high" && <ShieldAlert className="size-3" />}
       {s.sensitivity_tier === "moderate" && <TriangleAlert className="size-3" />}
       capture #{s.capture_id}
       {hasFile && (

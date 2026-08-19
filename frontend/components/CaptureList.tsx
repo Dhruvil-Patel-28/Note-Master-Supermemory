@@ -6,11 +6,11 @@ import {
   FileText,
   History,
   Loader2,
-  Lock,
   Mic,
   Pencil,
   RotateCcw,
   Search,
+  ShieldAlert,
   Trash2,
   TriangleAlert,
   X,
@@ -91,7 +91,7 @@ function TierBadge({ tier }: { tier: Capture["sensitivity_tier"] }) {
   if (tier === "high")
     return (
       <Badge variant="destructive">
-        <Lock className="mr-1 size-3" /> sensitive
+        <ShieldAlert className="mr-1 size-3" /> sensitive
       </Badge>
     );
   if (tier === "moderate")
