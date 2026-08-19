@@ -93,7 +93,7 @@ Everything runs on your machine. No hosted APIs, no API keys, no telemetry, no d
 
 ## Decision Log — every choice and why
 
-All scope decisions were resolved in `PLAN.md` (§3.5, §3.7) before build. The table below records the plan rationale **and** every implementation deviation made during Phases 1–4, with the measured reason.
+All scope decisions were resolved in `PLAN.md` (§3.5, §3.7) before build. The table below records the plan rationale **and** every implementation deviation made during Phases 1–5, with the measured reason.
 
 | Decision | Choice | Why |
 |---|---|---|
@@ -122,8 +122,8 @@ All scope decisions were resolved in `PLAN.md` (§3.5, §3.7) before build. The 
 | Graph writes | **Retired in v2** | v1 wrote LLM-extracted graph nodes best-effort at ingestion; the graph is deleted (Phase 4). Memory sync is best-effort the same way: `sync_capture` failures never fail the capture. |
 | Voice playback | **`GET /captures/{id}/audio` (FileResponse)** | Original audio is retained and playable from the capture list — the transcript is searchable, the recording stays yours. |
 | Audio capture format | **MediaRecorder → webm/opus, uploaded to `POST /captures/audio`** | Browser-native, no upload dependency; backend accepts `.m4a/.webm/.wav/.mp3/.aiff/.ogg/.opus`. |
-| Correction loop | **Built: `chat_feedback` table + `POST /feedback`** | Flagging a wrong answer stores the query/sources/reason and re-indexes the top source capture (best-effort) so future retrievals reflect the correction — the deferred Phase-5 item, shipped in the UI polish pass. |
-| Deferred: encryption at rest | **Unbuilt (Phase 5+)** | User-approved deferral. Requires rebuilding SQLite around SQLCipher and file-level encryption — a meaningful storage-layer change. Documented here so it's a conscious, visible gap: **today the SQLite DB and raw files are unencrypted on disk.** |
+| Correction loop | **Built: `chat_feedback` table + `POST /feedback`** | Flagging a wrong answer stores the query/sources/reason and re-indexes the top source capture (best-effort) so future retrievals reflect the correction — shipped in the UI polish pass. |
+| Deferred: encryption at rest | **Unbuilt (deferred)** | User-approved deferral. Requires rebuilding SQLite around SQLCipher and file-level encryption — a meaningful storage-layer change. Documented here so it's a conscious, visible gap: **today the SQLite DB and raw files are unencrypted on disk.** |
 | Out of scope (PLAN §2.4) | Multi-user collaboration, third-party integrations (Gmail/Drive), native mobile app | v1 is a single-user responsive web app; integrations could come as a future phase. |
 
 ---
@@ -238,7 +238,7 @@ Base URL: `http://127.0.0.1:8000`. The frontend proxies `/api/*` → backend via
 ### System
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/health` | `{status, database, ollama}` — backend + model reachability |
+| `GET` | `/api/health` | `{status, database, ollama, memory}` — backend + model + supermemory reachability |
 | `GET` | `/api/audit?limit=100` | Recent `audit_log` entries (query, sources, sensitive flag, time) |
 | `POST` | `/api/feedback` | `{query, capture_ids, kind, note}` — correction-loop feedback; re-indexes the top source capture |
 
@@ -366,7 +366,7 @@ frontend/
 3. Phase 2: ingest-side facts (deterministic transcript/resume parsers + 3b note facts) + lifecycle sync (RLock, customId upserts, delete retry)
 4. Phase 3: ask-side retrieval over supermemory (similarity floor, PIN gate anchors for high-tier captures, deterministic facts pre-gate, doc preview)
 5. Phase 4: v1 retrieval stack retired (FTS5/sqlite-vec/LadybugDB deleted; docs amended)
-6. Phase 5: `@memory` e2e battery (pending)
+6. Phase 5: `@memory` e2e battery vs the live supermemory-server (`scripts/run-memory-tests.sh`, isolated `nm_test` container, 5 tests green)
 
 **Deferred (user-approved):** encryption at rest.
 
