@@ -286,8 +286,9 @@ query → scrub injection → classify intent (notes/code/general)
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 93 tests, ~2.5min (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 68 tests, <15s, no Ollama needed
+uv run pytest tests                  # full suite: 79 tests, ~1-2.5min (real Ollama + whisper)
+uv run pytest tests -m "not llm"     # pure logic: 60 tests, <15s, no Ollama needed
+bash ../scripts/run-memory-tests.sh  # live @memory e2e battery (5 tests) — needs supermemory-server up
 ```
 
 Quirks that matter if you touch the suite:
@@ -335,8 +336,10 @@ backend/
     test_units.py           # pure-logic unit tests (fast path)
     test_memory_facts.py    # deterministic fact parsers
     test_memory_sync.py     # memory sync/lifecycle (fake client)
+    test_memory_e2e.py      # live battery vs. local supermemory-server (@memory)
 scripts/
   run-supermemory.sh        # the ONLY supported way to launch supermemory-server
+  run-memory-tests.sh       # the ONLY way to run the @memory battery (nm_test container)
 frontend/
   components/
     app-shell (in page.tsx) # header (health, theme, settings) + two-pane grid + mobile tabs

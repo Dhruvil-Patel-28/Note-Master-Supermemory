@@ -3,9 +3,13 @@ import tempfile
 
 import pytest
 
-os.environ["NOTE_MASTER_DATA_DIR"] = tempfile.mkdtemp(prefix="note_master_test_")
-os.environ["OCR_ENABLED"] = "0"
-os.environ["MEMORY_ENABLED"] = "0"
+os.environ.setdefault("NOTE_MASTER_DATA_DIR", tempfile.mkdtemp(prefix="note_master_test_"))
+os.environ.setdefault("OCR_ENABLED", "0")
+# The hermetic suite disables memory; the @memory run overrides this to "1"
+# via scripts/run-memory-tests.sh. All test-process writes go to a dedicated
+# container so the user's real data (user_main) is never touched.
+os.environ.setdefault("MEMORY_ENABLED", "0")
+os.environ.setdefault("MEMORY_CONTAINER_TAG", "nm_test")
 
 
 @pytest.fixture()
@@ -26,15 +30,21 @@ def db():
 
 
 @pytest.fixture(autouse=True)
-def memory_hits(monkeypatch):
+def memory_hits(monkeypatch, request):
     """Route-level retrieval seam: the chat route reads supermemory, but tests
     must stay hermetic (no server, no real embeddings). Substitute a fake that
-    returns every latest capture as a hit at 0.5 similarity (above the route's
-    MIN_MEMORY_SIMILARITY floor) whenever the query shares a content word with
-    at least one capture, and nothing otherwise — that mirrors the floor's
-    honest-not-found behavior for out-of-vocabulary queries ("do i own a
-    zebra" never drags the PAN note in). Semantic recall beyond lexical
-    overlap is supermemory's job, covered by the @memory battery."""
+    returns only captures whose content shares a word with the query
+    (plural-stemmed; academic queries — semester/credit/cgpa/grade/course/
+    transcript — always match, transcripts label semesters with bare
+    digits/romans so lexical overlap fails there), each at similarity 0.5; a
+    query with no overlap ("do i own a zebra") returns nothing so the honest
+    not-found path is exercised. Only matched captures are returned — an
+    all-captures context made the 3b answer from noise.
+
+    @memory tests bypass this fake entirely — they exercise the real
+    _memory_hits against a live supermemory-server."""
+    if request.node.get_closest_marker("memory"):
+        return
     import re
 
     from app.db import get_conn
