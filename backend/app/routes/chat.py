@@ -29,6 +29,7 @@ _DOC_NOUNS = {
     "resume", "cv", "document", "doc", "file", "pdf", "statement", "bill",
     "invoice", "receipt", "report", "letter", "slip", "contract", "agreement",
     "certificate", "license", "licence", "passport", "aadhaar", "aadhar", "pan",
+    "transcript",
 }
 
 _MEMORY_LIMIT = 30
@@ -62,17 +63,43 @@ def _document_intent(query: str) -> bool:
 
 
 def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
+    """Pick the document a doc-intent query asks for. Hits rank by similarity
+    (and the high-tier gate anchors by DB id), so the first doc hit can be a
+    decoy — a fraud report gating for "get me my aadhar card". Score each doc
+    by word overlap between the query's content words and its user-visible
+    labels (filename/note) — "get me my internship report" matches the
+    internship doc over any other "report"; ties fall to the first. A query
+    naming no doc at all falls back to the first doc hit."""
     if not _document_intent(query):
         return None
+    qwords = {
+        w.replace("aadhaar", "aadhar")
+        for w in re.findall(r"[a-z]+", query.lower())
+        if w not in _STOPWORDS and len(w) >= 2
+    }
+    if not qwords:
+        return None
+    best: tuple[int, int, ShowDocument] | None = None
+    first_doc: ShowDocument | None = None
     for h in hits:
         with db.get_conn() as conn:
             row = conn.execute(
-                "SELECT type, raw_content_ref, original_filename FROM captures WHERE id = ?",
+                "SELECT type, raw_content_ref, original_filename, note FROM captures WHERE id = ?",
                 (h["capture_id"],),
             ).fetchone()
-        if row and row["type"] == "doc" and row["raw_content_ref"]:
-            return ShowDocument(capture_id=h["capture_id"], filename=row["original_filename"])
-    return None
+        if not row or row["type"] != "doc" or not row["raw_content_ref"]:
+            continue
+        doc = ShowDocument(capture_id=h["capture_id"], filename=row["original_filename"])
+        if first_doc is None:
+            first_doc = doc
+        labels = set(
+            f"{row['original_filename'] or ''} {row['note'] or ''}"
+            .lower().replace("aadhaar", "aadhar").split()
+        )
+        score = len(qwords & labels)
+        if score >= 1 and (best is None or score > best[0]):
+            best = (score, h["capture_id"], doc)
+    return best[2] if best else first_doc
 
 
 def _high_tier_local_matches(query: str) -> list[dict]:

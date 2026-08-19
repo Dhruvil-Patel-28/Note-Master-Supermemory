@@ -77,6 +77,6 @@ def _extract_and_index(capture_id: int) -> None:
             raise ValueError("no content extracted (empty or failed OCR/ASR)")
         conn.execute(
             "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ? WHERE id = ?",
-            (content, classify(content), capture_id),
+            (content, classify(content, row["original_filename"], row["note"]), capture_id),
         )
     sync_capture(capture_id)

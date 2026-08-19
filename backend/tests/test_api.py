@@ -170,6 +170,20 @@ def test_edit_capture_reindexes_for_chat(client):
     assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
 
 
+def test_note_patch_reclassifies_tier(client):
+    cap = create_text(client, "some photo of me in goa")
+    assert cap["sensitivity_tier"] == "none"
+
+    r = client.patch(f"/captures/{cap['id']}", json={"note": "passport"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["sensitivity_tier"] == "high", body
+
+    r = client.patch(f"/captures/{cap['id']}", json={"note": "goa trip"})
+    assert r.status_code == 200, r.text
+    assert r.json()["sensitivity_tier"] == "none"
+
+
 @llm
 def test_grounded_not_found(client):
     create_text(client, "My PAN number is ABCDE1234F")

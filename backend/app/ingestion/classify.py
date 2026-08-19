@@ -48,12 +48,24 @@ def _has_keyword(text: str, keywords: list[str]) -> bool:
     return any(re.search(rf"\b{re.escape(k)}\b", text) for k in keywords)
 
 
-def classify(content: str) -> str:
+def classify(content: str, filename: str = "", note: str = "") -> str:
+    """Sensitivity tier from content PLUS user-facing labels (filename/note).
+
+    Labels are matched too because OCR text is unreliable: a passport photo
+    page rarely contains the literal word "passport", but its filename
+    ("Dhruvil PASSPORT_2.jpg") or note ("passport") does. Rules stay pure and
+    word-bounded either way."""
     text = (content or "").lower()
-    if _PAN_RE.search(content or "") or _AADHAAR_RE.search(content or "") or _ACCOUNT_RE.search(content or ""):
+    labels = f"{filename or ''} {note or ''}".strip()
+    haystack = f"{content or ''} {labels}"
+    # Keywords match against a word space (non-alphanumerics → spaces) so
+    # filenames like "passport_2.jpg" or "Aadhaar-2026.png" keep word
+    # boundaries intact; the regexes above still run on the raw haystack.
+    words_space = re.sub(r"[^a-z0-9]+", " ", f"{text} {labels.lower()}")
+    if _PAN_RE.search(haystack) or _AADHAAR_RE.search(haystack) or _ACCOUNT_RE.search(haystack):
         return "high"
-    if _has_keyword(text, _ID_KEYWORDS) or _has_keyword(text, _FINANCIAL_KEYWORDS):
+    if _has_keyword(words_space, _ID_KEYWORDS) or _has_keyword(words_space, _FINANCIAL_KEYWORDS):
         return "high"
-    if _has_keyword(text, _MODERATE_KEYWORDS):
+    if _has_keyword(words_space, _MODERATE_KEYWORDS):
         return "moderate"
     return "none"

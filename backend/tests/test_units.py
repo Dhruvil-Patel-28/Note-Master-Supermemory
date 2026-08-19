@@ -227,6 +227,76 @@ class TestClassify:
         assert classify("") == "none"
         assert classify("   ") == "none"
 
+    def test_labels_join_the_rules(self):
+        # OCR text of a passport photo page may never contain "passport" —
+        # the filename/note are part of the tier decision.
+        assert classify("photo of the owner", filename="Dhruvil PASSPORT_2.jpg") == "high"
+        assert classify("photo of the owner", note="passport") == "high"
+        assert classify("photo of the owner", filename="Dhruvil PASSPORT_2.jpg", note="passport") == "high"
+        assert classify("my room number is 42", note="meeting address list") == "moderate"
+        assert classify("my room number is 42", filename="trip-photo.jpg", note="goa trip") == "none"
+        assert classify("plain OCR text without labels") == "none"
+
+
+class TestFindDocument:
+    """Doc-intent selection must prefer the doc whose labels match the queried
+    noun — the regression for "get me my aadhar card" opening a fraud report
+    (gate anchors order by DB id, so the first doc hit can be a decoy)."""
+
+    def _insert(self, db, filename, note):
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO captures (type, content, raw_content_ref, original_filename, note, status, sensitivity_tier, is_latest) "
+                "VALUES ('doc', 'x', ?, ?, ?, 'indexed', 'high', 1)",
+                (filename, filename, note),
+            )
+            return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def test_prefers_label_match_over_first_hit(self, db):
+        from app.routes.chat import _find_document
+
+        fraud = self._insert(db, "Fraud_Detection_Report.pdf", "fraud detection report")
+        aadhar = self._insert(db, "Dhruvil Patel AADHAR CARD.jpg", "aadhar card")
+        pan = self._insert(db, "Screenshot pan card.png", "pan card")
+        hits = [
+            {"capture_id": fraud, "snippet": "x", "similarity": 1.0},
+            {"capture_id": aadhar, "snippet": "x", "similarity": 1.0},
+            {"capture_id": pan, "snippet": "x", "similarity": 1.0},
+        ]
+        doc = _find_document("get me my aadhar card or pan card", hits)
+        assert doc is not None and doc.capture_id == aadhar
+
+        doc = _find_document("get me my pan card", hits)
+        assert doc is not None and doc.capture_id == pan
+
+    def test_aadhaar_spelling_variant(self, db):
+        from app.routes.chat import _find_document
+
+        aadhar = self._insert(db, "Aadhaar.jpg", "aadhaar card")
+        hits = [{"capture_id": aadhar, "snippet": "x", "similarity": 1.0}]
+        doc = _find_document("show me my aadhar card", hits)
+        assert doc is not None and doc.capture_id == aadhar
+
+    def test_falls_back_to_first_doc_hit(self, db):
+        from app.routes.chat import _find_document
+
+        fraud = self._insert(db, "Fraud_Detection_Report.pdf", "fraud detection report")
+        hits = [{"capture_id": fraud, "snippet": "x", "similarity": 1.0}]
+        doc = _find_document("get me my resume", hits)
+        assert doc is not None and doc.capture_id == fraud
+
+    def test_word_overlap_beats_shared_noun(self, db):
+        from app.routes.chat import _find_document
+
+        fraud = self._insert(db, "Fraud_Detection_Report.pdf", "fraud detection report")
+        internship = self._insert(db, "Internship Application Status.pdf", "internship application track report")
+        hits = [
+            {"capture_id": fraud, "snippet": "x", "similarity": 1.0},
+            {"capture_id": internship, "snippet": "x", "similarity": 1.0},
+        ]
+        doc = _find_document("get me my internship report", hits)
+        assert doc is not None and doc.capture_id == internship
+
 
 class TestPin:
     def test_set_verify_clear_lifecycle(self):

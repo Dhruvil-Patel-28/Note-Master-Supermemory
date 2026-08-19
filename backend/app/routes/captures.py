@@ -4,6 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from fastapi.responses import FileResponse
 
 from .. import db, storage
+from ..ingestion.classify import classify
 from ..ingestion.extractors import SUPPORTED_EXTENSIONS
 from ..ingestion.pipeline import create_capture
 from ..ingestion.tasks import schedule_ingest
@@ -117,18 +118,24 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
     note = payload.note.strip() if payload.note else None
     if content is None and note is None:
         raise HTTPException(status_code=422, detail="nothing to update")
+    # Labels re-classify: a note like "passport" or a filename carrying the
+    # word can make OCR text that lacks it sensitive (classify is pure rules,
+    # instant — no re-extraction needed).
+    new_content = content if content is not None else (row["content"] or "")
+    new_note = note if note is not None else (row["note"] or "")
+    tier = classify(new_content, row["original_filename"], new_note)
     with db.get_conn() as conn:
         if content is not None:
             if not content:
                 raise HTTPException(status_code=422, detail="content must not be empty")
             conn.execute(
-                "UPDATE captures SET content = ?, note = ?, status = 'queued', error = NULL WHERE id = ?",
-                (content, note, capture_id),
+                "UPDATE captures SET content = ?, note = ?, status = 'queued', error = NULL, sensitivity_tier = ? WHERE id = ?",
+                (content, note, tier, capture_id),
             )
         else:
             conn.execute(
-                "UPDATE captures SET note = ? WHERE id = ?",
-                (note, capture_id),
+                "UPDATE captures SET note = ?, sensitivity_tier = ? WHERE id = ?",
+                (note, tier, capture_id),
             )
     if content is not None:
         schedule_ingest(background, capture_id)

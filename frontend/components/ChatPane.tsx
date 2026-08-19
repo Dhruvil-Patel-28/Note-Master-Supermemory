@@ -176,11 +176,11 @@ function AssistantMessage({
         )}
         {m.sources && m.sources.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {m.sources.map((s) => {
+            {m.sources.map((s, i) => {
               const cap = captures.find((c) => c.id === s.capture_id);
               return (
                 <SourceChip
-                  key={s.capture_id}
+                  key={`${s.capture_id}-${i}`}
                   s={s}
                   hasFile={cap?.type === "doc" && !!cap.raw_content_ref}
                   onClick={() => onSourceClick(s.capture_id)}
