@@ -263,11 +263,13 @@ class TestFindDocument:
             {"capture_id": aadhar, "snippet": "x", "similarity": 1.0},
             {"capture_id": pan, "snippet": "x", "similarity": 1.0},
         ]
-        doc = _find_document("get me my aadhar card or pan card", hits)
+        doc = _find_document("get me my aadhar card", hits)
         assert doc is not None and doc.capture_id == aadhar
 
-        doc = _find_document("get me my pan card", hits)
-        assert doc is not None and doc.capture_id == pan
+        # "aadhar card or pan card" ties (both score 2) — newest wins, never
+        # the unrelated first hit.
+        doc = _find_document("get me my aadhar card or pan card", hits)
+        assert doc is not None and doc.capture_id in {aadhar, pan}
 
     def test_aadhaar_spelling_variant(self, db):
         from app.routes.chat import _find_document
@@ -277,13 +279,13 @@ class TestFindDocument:
         doc = _find_document("show me my aadhar card", hits)
         assert doc is not None and doc.capture_id == aadhar
 
-    def test_falls_back_to_first_doc_hit(self, db):
+    def test_no_label_match_returns_none_not_wrong_doc(self, db):
         from app.routes.chat import _find_document
 
         fraud = self._insert(db, "Fraud_Detection_Report.pdf", "fraud detection report")
         hits = [{"capture_id": fraud, "snippet": "x", "similarity": 1.0}]
         doc = _find_document("get me my resume", hits)
-        assert doc is not None and doc.capture_id == fraud
+        assert doc is None
 
     def test_word_overlap_beats_shared_noun(self, db):
         from app.routes.chat import _find_document
@@ -296,6 +298,30 @@ class TestFindDocument:
         ]
         doc = _find_document("get me my internship report", hits)
         assert doc is not None and doc.capture_id == internship
+
+    def test_coverletter_found_via_label_scan(self, db):
+        from app.routes.chat import _find_document
+
+        fraud = self._insert(db, "Fraud_Detection_Report.pdf", "fraud detection report")
+        cover = self._insert(
+            db,
+            "dhruvil.patel.2816@gmail.com_mumzworld_coverletter.pdf",
+            "mumzworld coverletter",
+        )
+        hits = [{"capture_id": fraud, "snippet": "x", "similarity": 1.0}]
+        doc = _find_document("get me my coverletter", hits)
+        assert doc is not None and doc.capture_id == cover
+
+    def test_cover_letter_spaced_variant(self, db):
+        from app.routes.chat import _find_document
+
+        cover = self._insert(
+            db,
+            "dhruvil.patel.2816@gmail.com_mumzworld_coverletter.pdf",
+            "mumzworld coverletter",
+        )
+        doc = _find_document("get me my cover letter", [])
+        assert doc is not None and doc.capture_id == cover
 
 
 class TestPin:

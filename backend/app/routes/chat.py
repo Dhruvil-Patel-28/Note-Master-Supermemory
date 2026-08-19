@@ -25,12 +25,6 @@ _SHOW_VERBS = {
     "show", "get", "open", "display", "view", "fetch", "download", "retrieve",
     "see", "find", "bring", "give", "print", "read", "pull",
 }
-_DOC_NOUNS = {
-    "resume", "cv", "document", "doc", "file", "pdf", "statement", "bill",
-    "invoice", "receipt", "report", "letter", "slip", "contract", "agreement",
-    "certificate", "license", "licence", "passport", "aadhaar", "aadhar", "pan",
-    "transcript",
-}
 
 _MEMORY_LIMIT = 30
 _MEMORY_TOP_CAPTURES = 5
@@ -58,8 +52,32 @@ _STOPWORDS = {
 
 
 def _document_intent(query: str) -> bool:
+    """A doc-requesting query says show/get/open + names a thing. There is no
+    noun vocabulary to curate — a coverletter, marksheet, bonafide or any
+    future doc type is detected by matching the query's content words against
+    the stored labels (below). The verb gate alone decides intent; if the
+    named thing matches no doc's labels, the route falls through to the LLM."""
     words = set(re.findall(r"[a-z]+", query.lower()))
-    return bool(words & _SHOW_VERBS) and bool(words & _DOC_NOUNS)
+    return bool(words & _SHOW_VERBS)
+
+
+def _query_words(query: str) -> set[str]:
+    return {
+        w.replace("aadhaar", "aadhar")
+        for w in re.findall(r"[a-z]+", query.lower())
+        if w not in _STOPWORDS and len(w) >= 2
+    }
+
+
+def _label_score(qwords: set[str], raw_labels: str) -> int:
+    """Word overlap between the query's content words and a doc's labels.
+    Compound label tokens are split implicitly: "cover letter" matches
+    "coverletter" via substring, "aadhar card" matches "aadhar_card.jpg"."""
+    tokens = re.sub(r"[^a-z0-9]+", " ", raw_labels.lower().replace("aadhaar", "aadhar")).split()
+    score = len(qwords & set(tokens))
+    if score == 0:
+        score = sum(any(w in t for t in tokens) for w in qwords)
+    return score
 
 
 def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
@@ -67,39 +85,50 @@ def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
     (and the high-tier gate anchors by DB id), so the first doc hit can be a
     decoy — a fraud report gating for "get me my aadhar card". Score each doc
     by word overlap between the query's content words and its user-visible
-    labels (filename/note) — "get me my internship report" matches the
-    internship doc over any other "report"; ties fall to the first. A query
-    naming no doc at all falls back to the first doc hit."""
+    labels (filename/note). When the semantic hits don't surface the named
+    doc (embedding space rarely ranks "coverletter" high), scan the latest
+    docs' labels directly — the labels are the vocabulary, no noun list to
+    grow. Nothing matching returns None and the route falls to the LLM."""
     if not _document_intent(query):
         return None
-    qwords = {
-        w.replace("aadhaar", "aadhar")
-        for w in re.findall(r"[a-z]+", query.lower())
-        if w not in _STOPWORDS and len(w) >= 2
-    }
+    qwords = _query_words(query)
     if not qwords:
         return None
     best: tuple[int, int, ShowDocument] | None = None
-    first_doc: ShowDocument | None = None
+    scored: set[int] = set()
+
+    def consider(row) -> None:
+        nonlocal best
+        doc = ShowDocument(capture_id=row["id"], filename=row["original_filename"])
+        labels = f"{row['original_filename'] or ''} {row['note'] or ''}"
+        score = _label_score(qwords, labels)
+        if score < 1:
+            return
+        # Ties fall to the newest upload — "my coverletter" means the latest.
+        if best is None or score > best[0] or (score == best[0] and row["id"] > best[1]):
+            best = (score, row["id"], doc)
+
     for h in hits:
         with db.get_conn() as conn:
             row = conn.execute(
-                "SELECT type, raw_content_ref, original_filename, note FROM captures WHERE id = ?",
+                "SELECT id, type, raw_content_ref, original_filename, note FROM captures WHERE id = ?",
                 (h["capture_id"],),
             ).fetchone()
         if not row or row["type"] != "doc" or not row["raw_content_ref"]:
             continue
-        doc = ShowDocument(capture_id=h["capture_id"], filename=row["original_filename"])
-        if first_doc is None:
-            first_doc = doc
-        labels = set(
-            f"{row['original_filename'] or ''} {row['note'] or ''}"
-            .lower().replace("aadhaar", "aadhar").split()
-        )
-        score = len(qwords & labels)
-        if score >= 1 and (best is None or score > best[0]):
-            best = (score, h["capture_id"], doc)
-    return best[2] if best else first_doc
+        scored.add(row["id"])
+        consider(row)
+    if best is None:
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, type, raw_content_ref, original_filename, note FROM captures "
+                "WHERE is_latest = 1 AND type = 'doc' AND raw_content_ref IS NOT NULL"
+            ).fetchall()
+        for row in rows:
+            if row["id"] in scored:
+                continue
+            consider(row)
+    return best[2] if best else None
 
 
 def _high_tier_local_matches(query: str) -> list[dict]:
