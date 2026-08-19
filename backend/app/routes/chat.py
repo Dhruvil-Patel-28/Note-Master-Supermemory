@@ -76,6 +76,33 @@ def _label_score(qwords: set[str], raw_labels: str) -> int:
     return score
 
 
+def _match_document(query: str) -> dict | None:
+    """Best latest capture whose labels (filename/note) overlap the query's
+    content words — the labels ARE the vocabulary, no noun list. Unlike
+    `_find_document` this needs no show-verb: a content question that names a
+    document ("what did i mention while applying to mumzworld") must draw on
+    that document even when semantic ranking surfaces other captures. Ties
+    fall to the newest upload. None when the query names no label."""
+    qwords = _query_words(query)
+    if not qwords:
+        return None
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, content, original_filename, note FROM captures WHERE is_latest = 1"
+        ).fetchall()
+    best: dict | None = None
+    best_score = 0
+    for row in rows:
+        labels = f"{row['original_filename'] or ''} {row['note'] or ''}"
+        score = _label_score(qwords, labels)
+        if score < 1:
+            continue
+        if best is None or score > best_score or (score == best_score and row["id"] > best["id"]):
+            best = row
+            best_score = score
+    return best
+
+
 def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
     """Pick the document a doc-intent query asks for. Hits rank by similarity,
     so the first doc hit can be a decoy — a fraud report ranking high for "get
@@ -183,6 +210,19 @@ def chat(payload: ChatRequest):
         )
 
     hits = _memory_hits(query)
+
+    # A content question that names a document by its labels ("what did i
+    # mention while applying to mumzworld") pins that document's content into
+    # the context — ranking luck must not decide which document the LLM reads.
+    matched = _match_document(query)
+    if matched and not any(h["capture_id"] == matched["id"] for h in hits):
+        hits = [
+            {
+                "capture_id": matched["id"],
+                "snippet": (matched["content"] or "")[:1000],
+                "similarity": 1.0,
+            }
+        ] + hits
 
     # Deterministic transcript facts (semester courses, total credits) are
     # parsed in Python from the capture contents — no LLM, no gates.

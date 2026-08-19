@@ -195,6 +195,28 @@ def test_sensitive_facts_answer_behind_pin_gate(client, monkeypatch):
 
 
 @llm
+def test_query_naming_doc_label_pins_its_content(client):
+    cap = create_text(
+        client,
+        "In my application to mumzworld I mentioned proposing a context-aware assistant "
+        "that remembers a child's profile across sessions",
+    )
+    r = client.patch(f"/captures/{cap['id']}", json={"note": "mumzworld coverletter"})
+    assert r.status_code == 200, r.text
+
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "what did i mention while applying to mumzworld"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        if body["found"] and any(s["capture_id"] == cap["id"] for s in body["sources"]):
+            break
+    assert body["found"], body
+    assert any(s["capture_id"] == cap["id"] for s in body["sources"]), body["sources"]
+    assert "assistant" in body["answer"].lower(), body["answer"]
+
+
+@llm
 def test_sensitive_facts_not_answered_without_user_reference(client):
     r = client.post(
         "/chat",
