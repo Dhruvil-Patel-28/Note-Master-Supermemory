@@ -101,7 +101,7 @@ def test_default_search_excludes_old_versions(client, tmp_path):
 
 
 @llm
-def test_delete_capture_cascades_to_fts(client):
+def test_delete_capture_removes_it_from_chat(client):
     cap = create_text(client, "electricity bill amount 3500 rupees")
     token = unlock(client)
     h = {"X-Pin-Token": token}
@@ -156,64 +156,18 @@ def test_semester_courses_answered_completely_and_injection_proof(client):
     assert [f["key"] for f in body["structured"]["fields"]] == ["MAL 201"]
 
 
-def test_note_stored_and_indexed_in_fts(client, tmp_path):
-    from app.retrieval.fts import search as fts_search
-
-    p = tmp_path / "resume.txt"
-    p.write_text("Dhruvil Patel - software engineer")
-    r = client.post(
-        "/captures/file",
-        files={"file": ("resume.txt", p.open("rb"), "text/plain")},
-        data={"note": "this is my resume"},
-    )
-    assert r.status_code == 200, r.text
-    cap = wait_indexed(client, r.json())
-    assert cap["note"] == "this is my resume"
-    assert any(h["capture_id"] == cap["id"] for h in fts_search("this is my resume"))
-
-    r = client.patch(f"/captures/{cap['id']}", json={"note": "updated note label"})
-    assert r.status_code == 200, r.text
-    assert r.json()["note"] == "updated note label"
-    assert any(h["capture_id"] == cap["id"] for h in fts_search("updated note label"))
-    with db_conn() as conn:
-        row = conn.execute("SELECT content FROM captures_fts WHERE rowid = ?", (cap["id"],)).fetchone()
-    assert row is not None
-    assert "updated note label" in row["content"]
-    assert "this is my resume" not in row["content"]
-
-
-def test_fts_typo_tolerance(client):
-    from app.retrieval.fts import search as fts_search
-
-    cap = create_text(client, "remember to buy batteries for the remote")
-    assert any(h["capture_id"] == cap["id"] for h in fts_search("byu batteries"))
-
-    typo_cap = create_text(client, "i have to but mangoes tomorrow")
-    hits = fts_search("buy mangoes")
-    assert any(h["capture_id"] == typo_cap["id"] for h in hits)
-
-
-def test_fts_or_fallback_prefers_multi_term_docs(client):
-    from app.retrieval.fts import search as fts_search
-
-    generic = create_text(client, "my aadhar number is 1234 and my name is dhruvil")
-    specific = create_text(
-        client, "transcript of indian institute of information technology with my college name listed"
-    )
-    hits = fts_search("college name zzzz-no-such-term")
-    assert hits[0]["capture_id"] == specific["id"], hits
-    assert hits[0]["snippet"].count("<b>") >= hits[1]["snippet"].count("<b>")
-
-
 @llm
-def test_edit_capture_reindexes(client):
-    from app.retrieval.fts import search as fts_search
-
+def test_edit_capture_reindexes_for_chat(client):
     cap = create_text(client, "meeting with Ravi about project alpha")
     client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
     wait_indexed(client, {"id": cap["id"]})
-    assert any(h["capture_id"] == cap["id"] for h in fts_search("Priya"))
-    assert all(h["capture_id"] != cap["id"] for h in fts_search("Ravi"))
+
+    r = client.post("/chat", json={"query": "meeting with Priya"})
+    assert r.status_code == 200
+    assert any(s["capture_id"] == cap["id"] for s in r.json()["sources"])
+
+    r = client.post("/chat", json={"query": "who is Ravi"})
+    assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
 
 
 @llm
@@ -397,48 +351,6 @@ def test_vector_search_excludes_old_versions(client, tmp_path):
 
 
 @llm
-def test_delete_capture_cascades_chunks(client):
-    from app.db import get_conn
-
-    cap = create_text(client, "electricity bill amount 3500 rupees")
-    with get_conn() as conn:
-        n = conn.execute("SELECT COUNT(*) FROM capture_chunks WHERE capture_id = ?", (cap["id"],)).fetchone()[0]
-    assert n >= 1
-    with get_conn() as conn:
-        nv = conn.execute(
-            "SELECT COUNT(*) FROM chunks_vec v JOIN capture_chunks ch ON ch.id = v.rowid WHERE ch.capture_id = ?",
-            (cap["id"],),
-        ).fetchone()[0]
-    assert nv == n
-    client.delete(f"/captures/{cap['id']}")
-    with get_conn() as conn:
-        n = conn.execute("SELECT COUNT(*) FROM capture_chunks WHERE capture_id = ?", (cap["id"],)).fetchone()[0]
-        nv = conn.execute(
-            "SELECT COUNT(*) FROM chunks_vec v JOIN capture_chunks ch ON ch.id = v.rowid WHERE ch.capture_id = ?",
-            (cap["id"],),
-        ).fetchone()[0]
-    assert n == 0 and nv == 0
-
-
-@llm
-def test_edit_reindexes_chunks(client):
-    from app.db import get_conn
-
-    cap = create_text(client, "meeting with Ravi about project alpha")
-    with get_conn() as conn:
-        old = conn.execute(
-            "SELECT text FROM capture_chunks WHERE capture_id = ?", (cap["id"],)
-        ).fetchone()["text"]
-    client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
-    wait_indexed(client, {"id": cap["id"]})
-    with get_conn() as conn:
-        new = conn.execute(
-            "SELECT text FROM capture_chunks WHERE capture_id = ?", (cap["id"],)
-        ).fetchone()["text"]
-    assert old != new and "Priya" in new
-
-
-@llm
 def test_file_upload_docx(client, tmp_path):
     from docx import Document
 
@@ -523,66 +435,6 @@ def test_restore_flips_latest(client):
     latest = [c for c in client.get("/captures").json() if c["document_group_id"] == v1_id]
     assert len(latest) == 1 and latest[0]["id"] == v1_id
 
-
-@llm
-def test_entity_extraction_creates_graph(client):
-    from app import graph
-
-    names = None
-    for _ in range(3):
-        cap = create_text(client, "My PAN number is ABCDE1234F issued by Income Tax Department")
-        with graph.get_conn() as conn:
-            rows = graph._rows(
-                conn,
-                "MATCH (c:Capture {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name AS name",
-                {"id": cap["id"]},
-            )
-        names = [r["name"] for r in rows]
-        if "abcde1234f" in names:
-            break
-    assert names is not None and "abcde1234f" in names
-
-
-@llm
-def test_graph_two_hop_related_capture(client):
-    from app import graph
-
-    create_text(client, "The electricity bill was issued by Adani Power")
-    cap2 = create_text(client, "Call Adani Power for outages, helpline 1800-233")
-    ids = [h["capture_id"] for h in graph.search(["electricity bill"])]
-    assert cap2["id"] in ids, f"expected 2-hop reach of {cap2['id']}, got {ids}"
-
-
-@llm
-def test_graph_versioning_excludes_old(client, tmp_path):
-    from app import graph
-
-    p = tmp_path / "stmt.txt"
-    p.write_text("Bank statement for account ACC-777")
-    v1 = upload_file(client, p)
-    p.write_text("Bank statement for account ACC-888")
-    v2 = upload_file(client, p, document_group_id=v1["document_group_id"])
-    ids = [h["capture_id"] for h in graph.search(["bank statement"])]
-    assert v2["id"] in ids
-    assert v1["id"] not in ids
-
-
-@llm
-def test_edit_capture_reindexes_graph(client):
-    from app import graph
-
-    cap = create_text(client, "meeting with Ravi about project alpha")
-    client.patch(f"/captures/{cap['id']}", json={"content": "meeting with Priya about project beta"})
-    wait_indexed(client, {"id": cap["id"]})
-    with graph.get_conn() as conn:
-        rows = graph._rows(
-            conn,
-            "MATCH (c:Capture {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name AS name",
-            {"id": cap["id"]},
-        )
-    names = [r["name"] for r in rows]
-    assert "priya" in names
-    assert "ravi" not in names
 
 @llm
 def test_voice_capture_transcribes(client, tmp_path):

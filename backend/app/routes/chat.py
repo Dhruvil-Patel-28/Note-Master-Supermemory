@@ -42,6 +42,19 @@ _CONTEXT_BUDGET = 14000
 # floor is set below the observed relevant band (0.44-0.55, fact docs higher).
 MIN_MEMORY_SIMILARITY = 0.45
 
+# High-tier gate-anchor scan (below) and v1's FTS shared the same stopword
+# set — inlined here since the FTS module is retired.
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+    "he", "i", "in", "is", "it", "its", "me", "much", "my", "of", "on",
+    "or", "that", "the", "this", "to", "was", "we", "were", "what", "will",
+    "with", "you", "your",
+    "about", "any", "can", "could", "did", "do", "does", "get", "going",
+    "here", "how", "just", "know", "like", "please", "say", "said", "should",
+    "show", "tell", "there", "want", "when", "where", "which", "who", "why",
+    "would",
+}
+
 
 def _document_intent(query: str) -> bool:
     words = set(re.findall(r"[a-z]+", query.lower()))
@@ -67,8 +80,6 @@ def _high_tier_local_matches(query: str) -> list[dict]:
     in supermemory). Word-overlap on the query's content terms — the same
     overlap the PIN gate has always relied on; single-char and stopwords are
     dropped so "a" / "in" can't gate on every high doc."""
-    from ..retrieval.fts import _STOPWORDS
-
     qwords = {
         w for w in re.findall(r"[a-z]+", query.lower()) if len(w) >= 2 and w not in _STOPWORDS
     }

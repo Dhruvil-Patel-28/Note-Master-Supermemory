@@ -138,15 +138,16 @@ Proposed retrieval flow per query:
 | Frontend | Next.js |
 | Backend/API | FastAPI |
 | App state / metadata | SQLite |
-| Full-text search | SQLite FTS5 |
-| Graph DB | **LadybugDB** (embedded property-graph engine, MIT licensed) |
-| Vector store | **sqlite-vec** (embedded SQLite extension — keeps the stack to a single SQLite file for state + vectors + FTS5) |
-| OCR | **AnyDoc** (typed docs) + **Qwen-OCR** (scanned/image docs), routed by document type at ingestion |
+| Full-text search | SQLite FTS5 (retired in v2 — semantic search via supermemory) |
+| Graph DB | ~~LadybugDB~~ — **retired in v2 Phase 4** (supermemory fact docs supersede it) |
+| Vector store | ~~sqlite-vec~~ — **retired in v2 Phase 4** (supermemory embeddings supersede it) |
+| Knowledge + retrieval | **supermemory-server (v2)** — local standalone runtime, third storage engine (knowledge layer: raw-content docs + fact docs, embeddings, semantic search) |
+| OCR | **AnyDoc** (typed docs) + **Qwen-OCR** (scanned/image docs), routed by document type at ingestion (v1 shipped pypdf/python-docx/openpyxl + qwen2.5vl:3b instead — same routing, different tools) |
 | ASR (voice) | **faster-whisper**, local CPU (small/base model) |
 | User model | **Single-user for v1** — no auth/tenant-isolation layer required; `user_id` scoping deferred until/unless multi-user is revisited |
 | Document versioning | **Re-uploads are versioned, not overwritten** — see 3.2a for schema implication |
 
-With sqlite-vec joining SQLite+FTS5 in the same file, the storage layer is now effectively **two engines**: one SQLite database (state + FTS5 + vectors) and one LadybugDB graph store — both embedded, no standalone services to run. This is a meaningfully lighter ops footprint than originally scoped.
+**v2 amendment (Phase 4):** the "two engines" stack below is retired. Storage is now **three runtimes, all localhost**: one SQLite file holds app state, a local supermemory-server holds knowledge/retrieval (raw-content docs + deterministic fact docs, embeddings, semantic search), and files (audio, uploads) live on disk referenced by path. LadybugDB and sqlite-vec are deleted (Phase 4); semantic recall supersedes hand-rolled FTS5+vector+graph fusion. Original v1 text preserved for history:
 
 **OCR routing detail:** at ingestion, a cheap file-type/content check decides the path — digital documents with a real text layer (Word, Excel, text-based PDFs, etc.) go through AnyDoc locally (no OCR model, no API cost, single-digit-millisecond conversion); scanned or photographed documents (Aadhar, PAN, physical receipts) route to Qwen-OCR for structured field/text extraction. This keeps the majority of captures off the OCR model entirely and only invokes it where genuinely needed.
 
@@ -157,8 +158,8 @@ All open questions are now resolved — the scope is ready for sign-off.
 ### 3.7 Resolved Decisions Log
 | Decision | Choice | Rationale |
 |---|---|---|
-| Graph DB | LadybugDB | Embedded (no extra service), MIT license, sufficient for hand-rolled hybrid retrieval fusion; FalkorDB's built-in AI/agent tooling and clustering aren't needed at this scale |
-| Vector store | sqlite-vec | Keeps vector search embedded in the same SQLite file as app state + FTS5 — minimal infra |
+| Graph DB | ~~LadybugDB~~ → **retired (v2 Phase 4)** | Embedded, MIT — but v2 replaced hand-rolled hybrid retrieval with supermemory fact docs + semantic search; the graph was deleted |
+| Vector store | ~~sqlite-vec~~ → **retired (v2 Phase 4)** | Kept vectors embedded in SQLite — but v2's supermemory-server owns embeddings + semantic search; sqlite-vec deleted |
 | User model | Single-user (v1) | No near-term plan for other users; avoids the `user_id`-everywhere isolation work across all four stores until actually needed |
 | Document re-upload | Versioned | Preserves history instead of silently overwriting a prior version of a document (e.g. an updated bank statement) |
 | Sensitive-doc confirmation UX | Tiered — banner by default, PIN gate for high-sensitivity tier only | Captures are classified into sensitivity tiers at ingestion (per 3.4 PII/sensitivity tagging); only the highest tier (ID docs, financial docs — Aadhar, PAN, bank statements) is gated behind a local PIN before rendering, everything else just shows a warning label. Chosen over full re-auth on every sensitive retrieval (too much friction for a single-user app) and over banner-only (too weak a guardrail for ID/financial data). Device biometric re-auth (WebAuthn) was considered but deferred — cleaner fit for a future native app than the current Next.js web app. |
@@ -170,10 +171,11 @@ All open questions are now resolved — the scope is ready for sign-off.
 ---
 
 ## 4. Suggested Phasing
-1. **Phase 1:** Capture pipeline (text + doc upload) + SQLite + FTS5 + basic chat retrieval (no graph/vector yet) — validate core loop.
-2. **Phase 2:** Add vector search + embeddings, structured output formatting.
-3. **Phase 3:** Add graph DB + entity extraction for relationship-aware queries.
-4. **Phase 4:** Voice notes + guardrail hardening (sensitivity classification, audit log, access confirmation).
+1. **Phase 1:** Capture pipeline (text + doc upload) + SQLite + FTS5 + basic chat retrieval (no graph/vector yet) — validate core loop. *(shipped as v1)*
+2. **Phase 2:** Add vector search + embeddings, structured output formatting. *(shipped as v1)*
+3. **Phase 3:** Add graph DB + entity extraction for relationship-aware queries. *(shipped as v1)*
+4. **Phase 4:** Voice notes + guardrail hardening (sensitivity classification, audit log, access confirmation). *(shipped as v1)*
+5. **v2 (Supermemory) Phases 0–5:** install + verify the local supermemory-server; memory client; ingest-side facts + lifecycle sync; ask-side retrieval + PIN gate over memory results; retire the v1 retrieval stack (done); `@memory` e2e battery. See `HANDOFF.md`.
 
 ---
 

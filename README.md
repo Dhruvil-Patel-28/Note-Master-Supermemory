@@ -63,7 +63,7 @@ Everything runs on your machine. No hosted APIs, no API keys, no telemetry, no d
 │  Frontend: Next.js 16 (App   │  REST    │  Backend: FastAPI             │
 │  Router), localhost:3000     │─────────▶│  Orchestration layer          │
 │  · CaptureComposer (text/    │          │   ├─ Ingestion pipeline (BG)  │
-│    mic/file)                 │          │   ├─ Hybrid retrieval engine  │
+│    mic/file)                 │          │   ├─ Retrieval (supermemory)  │
 │  · CaptureList (+playback)   │          │   └─ Guardrail layer (PIN,    │
 │  · ChatPane (cards, PIN)     │          │      audit)                   │
 └──────────────────────────────┘          └──────────┬────────────────────┘
@@ -71,21 +71,23 @@ Everything runs on your machine. No hosted APIs, no API keys, no telemetry, no d
         ┌──────────────────────────────┬─────────────┴──────────┐
         ▼                              ▼                        ▼
   ┌─────────────┐              ┌───────────────┐         ┌─────────────┐
-  │ SQLite       │              │ LadybugDB      │         │ Disk files  │
-  │ (one file)   │              │ (property      │         │ · uploads   │
-  │ · app state  │              │  graph)        │         │ · audio     │
-  │ · FTS5       │              │ · Entity nodes │         │ (referenced │
-  │ · sqlite-vec │              │ · 1–2 hop walk │         │  by path)   │
+  │ SQLite       │              │ supermemory-   │         │ Disk files  │
+  │ (one file)   │              │ server         │         │ · uploads   │
+  │ · app state  │              │ (localhost:    │         │ · audio     │
+  │ · tiers/audit│              │  6767)         │         │ (referenced │
+  │ · memory ids │              │ · raw docs     │         │  by path)   │
+  │              │              │ · fact docs    │         │             │
+  │              │              │ · embeddings + │         │             │
+  │              │              │   semantic     │         │             │
+  │              │              │   search       │         │             │
   └─────────────┘              └───────────────┘         └─────────────┘
-        ▲
-  Ollama (localhost:11434)
-  · llama3.2:3b   — chat answers + entity extraction
-  · nomic-embed-text — embeddings (768-dim)
-  · qwen2.5vl:3b  — OCR (vision), opt-in
-  faster-whisper (base, CPU) — voice transcription
+        ▲                            ▲
+  Ollama (localhost:11434)   faster-whisper (base, CPU)
+  · llama3.2:3b  — chat answers + note facts
+  · qwen2.5vl:3b — OCR (vision), opt-in
 ```
 
-**Two embedded engines, zero standalone services.** One SQLite file holds app state + FTS5 full-text index + vector index (via the sqlite-vec extension); a second embedded store (LadybugDB) holds the knowledge graph; raw files live on disk referenced by path. There is nothing to run, configure, or back up separately — a consequence of the "single-user, local-first, minimal ops footprint" decision.
+**Three runtimes, all localhost.** One SQLite file holds app state (captures, tiers, audit, PIN, memory doc ids); a local **supermemory-server** (third runtime, added in v2) holds knowledge and retrieval — every non-high capture mirrors in as one raw-content doc + deterministic fact docs, and chat retrieves over it semantically; raw files live on disk referenced by path. The v1 embedded retrieval stack (FTS5, sqlite-vec, LadybugDB) was **retired in v2 Phase 4** — semantic recall superseded it.
 
 ---
 
@@ -98,26 +100,26 @@ All scope decisions were resolved in `PLAN.md` (§3.5, §3.7) before build. The 
 | Frontend | **Next.js 16, responsive web** | Single-user v1; no native app until the product proves out. One codebase, no app-store friction. |
 | Backend | **FastAPI** | Async ingestion with `BackgroundTasks`, pydantic-validated API, trivial test harness. |
 | App state | **SQLite (stdlib `sqlite3`, no ORM)** | Zero deps, zero services; schema is small and hand-managed. |
-| Full-text search | **SQLite FTS5** | Keyword/exact-token search (PAN numbers, dates, names) where semantic search is unreliable — and it lives in the same file as everything else. |
-| Vector store | **sqlite-vec 0.1.9, embedded in the same SQLite file** | Keeps state + FTS5 + vectors in one file — minimal infra, no separate vector DB to run. |
-| Graph DB | **LadybugDB (embedded, MIT — formerly Kuzu)** | Property-graph engine that runs in-process, no extra service; FalkorDB's built-in AI tooling and clustering are unneeded at this scale. Cypher queries at query time. |
+| Full-text search | ~~SQLite FTS5~~ — **retired in v2 (supermemory semantic search)** | Keyword search was v1's workhorse; v2's semantic recall over supermemory supersedes it. |
+| Vector store | ~~sqlite-vec 0.1.9~~ — **retired in v2** | Was embedded in SQLite; v2's supermemory-server owns embeddings + semantic search. |
+| Graph DB | ~~LadybugDB~~ — **retired in v2** | Was the property graph for relationship queries; v2's fact docs + semantic recall supersede it. |
+| Knowledge + retrieval | **supermemory-server (v2, localhost:6767)** | Third runtime: every non-high capture mirrors as raw-content + fact docs (deterministic parsers for transcripts/resumes + 3b few-shot note facts); chat retrieves over it with a similarity floor (`MIN_MEMORY_SIMILARITY = 0.45`). High-tier captures never enter memory; the PIN gate re-attaches them via a local lexical scan. Launched ONLY via `scripts/run-supermemory.sh`. |
 | User model | **Single-user v1** | No near-term multi-user plan; avoids `user_id` isolation work across all four stores until actually needed. A `users` table is kept anyway (future-proofing). |
 | Document re-upload | **Versioned, never overwritten** | Re-upload inserts a new `captures` row sharing `document_group_id`, bumps `version_number`, flips `is_latest`; old versions retained and queryable via history — preserves e.g. an updated bank statement instead of silently destroying the prior one. |
 | Sensitivity model | **Tiers (`none`/`moderate`/`high`), not a boolean** | A flag is too coarse: meeting notes (moderate) deserve a warning label, ID/financial docs (high) deserve a gate. |
 | Sensitive retrieval UX | **Banner for moderate, PIN gate for high only** | Full re-auth on every sensitive retrieval = too much friction for a single-user app; banner-only = too weak for Aadhaar/PAN/bank statements. WebAuthn biometric re-auth was considered and deferred — a cleaner fit for a future native app than a web app. |
 | PIN implementation | **Local app-level passcode: scrypt (n=2¹⁴, r=8, p=1) hash, 30-min unlock token (sha256), `X-Pin-Token` header** | Not tied to any auth system (there is none) — a lightweight guardrail against casual snooping, explicitly documented as such. Token is stored hashed; `delete` allows an empty PIN as a local recovery path. |
 | Sensitivity classifier | **Pure rules, no LLM** *(deviation from PLAN's "rule-based + ML/LLM classifier")* | Deterministic, instant, free: PAN/Aadhaar/account-number regexes + ID/financial keyword lists → `high`; meeting/doctor/address/phone keywords → `moderate`; else `none`. An LLM classifier adds cost and nondeterminism for zero correctness gain on known doc types. |
-| Chat + entity-extraction model | **`llama3.2:3b` (~2GB, sub-second answers, ~1–3s extraction)** *(deviation from the originally picked qwen3:8b)* | **Measured: qwen3 models (8b AND 4b) are pathologically slow at JSON generation on this Mac — 19–150s per call.** The 3b model passes all grounding + structured-card tests and keeps the machine responsive. Overridable via `OLLAMA_MODEL` / `OLLAMA_EXTRACT_MODEL` (qwen3:8b and hermes3 remain installed). |
+| Chat + note-facts model | **`llama3.2:3b` (~2GB, sub-second answers, ~1–3s extraction)** *(deviation from the originally picked qwen3:8b)* | **Measured: qwen3 models (8b AND 4b) are pathologically slow at JSON generation on this Mac — 19–150s per call.** The 3b model passes all grounding + structured-card tests and keeps the machine responsive. Overridable via `OLLAMA_MODEL` / `OLLAMA_EXTRACT_MODEL` (qwen3:8b and hermes3 remain installed). |
 | Grounding prompt | **"You must NEVER use your own knowledge" + `think: false` + temperature 0.1** | Small models ignore weaker wording ("only answer from context") — the hardened phrasing is what makes the not-found path and PIN gate hold. |
 | Intent layer | **Query classified before retrieval (`notes`/`code`/`general`/`hybrid`/`unknown`); `code`/`general` → clean refusal** *(post-Phase-4)* | Code and general-knowledge questions used to produce garbage from the notes-cage (e.g. "print my name in python" → `print(`). Now a one-call 3b classifier routes them to a deterministic "I can only answer about your notes" refusal with zero retrieval — nothing sensitive is ever touched. A `general` verdict is downgraded to `notes` whenever the question concerns the user ("my", "do i") unless code hints win, because the small classifier over-answers "general". |
-| Stuck-expansion | **When retrieval comes back empty/thin, the LLM picks anchor words from the user's actual vocabulary (per-capture sampled) and FTS re-runs with them** *(post-Phase-4)* | The general cure for lexical gaps — "where do i study" fails because notes say "institute", never "study". Instead of per-case augmentation lists, one mechanism: `_vocabulary()` samples the distinctive words of the latest captures, the 3b picks related ones, they re-enter retrieval, and prompt inference rules ("an institute in the docs is where the user studies") + a few-shot example complete the answer. |
-| Embeddings | **`nomic-embed-text` via local Ollama (768-dim)** | Free, local, good enough for personal-note semantic search. |
-| Vector honesty | **KNN fetches 12 candidates, cosine re-scores in Python, `MIN_COSINE_DISTANCE = 0.5`** | sqlite-vec 0.1.9 can't SELECT stored vectors back, so the embedding is denormalized as a BLOB into `capture_chunks` at index time and re-scored at query time. Unrelated hits are dropped so the PIN gate and the not-found path stay honest (without it, an unrelated query in a DB of only high-tier docs would misfire the PIN gate). |
-| FTS query building | **Punctuation stripped + small stopword list before AND-then-OR fallback** | Without stopword filtering, the OR fallback matched common words like "is" and the PIN gate misfired on genuinely unrelated queries — found and fixed during Phase 4 testing. |
-| Retrieval fusion | **Reciprocal-rank fusion of FTS + vector + graph, deduped by capture; top 5 fed to the LLM** | Hybrid recall with a single ranked list; more than ~5 hits adds noise that makes small models flip structured answers to prose. If embeddings fail, chat degrades to FTS-only. |
+| Stuck-expansion | **Retired in v2** | v1's cure for lexical gaps ("where do i study" — notes say "institute", never "study") was LLM anchor-picking + FTS re-run. v2's semantic recall + fact docs answer these directly — the machinery and its tests were deleted in Phase 4. |
+| Embeddings | **`nomic-embed-text` via local Ollama (768-dim), consumed by supermemory-server** | Free, local, good enough for personal-note semantic search. The server is pointed at Ollama via `SUPERMEMORY_EMBEDDING_*` in `scripts/run-supermemory.sh`. |
+| Vector honesty | **`MIN_MEMORY_SIMILARITY = 0.45` floor on supermemory hits** *(v2)* | supermemory ranks EVERY doc for any query (threshold 0), so an out-of-vocabulary question ("do i own a zebra") would drag unrelated chunks — including a high-tier PAN note — into the top-5 and gate an innocent query. v1's cosine threshold did the same job; the floor sits below the observed relevant band (0.44–0.55, fact docs higher). |
+| Retrieval fusion | **Retired in v2 — per-capture grouping + context budget instead** | v1 fused FTS+vector+graph with reciprocal rank. v2: chunk hits grouped per capture (top 5 captures × 3 chunks, 14000-char budget) so duplicated uploads can't starve the LLM context; sources are per-chunk with tiers. |
 | OCR | **Routing: real text layer (PDF/Word/Excel) → local pypdf/python-docx/openpyxl (no model); scanned/photographed → `qwen2.5vl:3b` vision model, `OCR_ENABLED`-gated** *(deviation: PLAN named Qwen-OCR, which doesn't exist in Ollama's registry — switched to the vision model, user-approved)* | The majority of captures (digital docs) never touch a model; vision OCR only runs when genuinely needed. With `OCR_ENABLED=0`, scanned docs fail ingestion by design (explicit, not silent). |
 | ASR | **faster-whisper (CTranslate2), `base` model, CPU, on-demand per note** | Free, no per-minute cost, and audio — which may contain spoken sensitive info — never leaves the machine. NVIDIA Canary-Qwen (more accurate but GPU-heavy) and hosted Whisper APIs (recurring cost + privacy trade-off) were considered and set aside. |
-| Graph writes | **Best-effort** | LLM entity extraction can fail; a capture must still index. Failures are logged, never fatal. |
+| Graph writes | **Retired in v2** | v1 wrote LLM-extracted graph nodes best-effort at ingestion; the graph is deleted (Phase 4). Memory sync is best-effort the same way: `sync_capture` failures never fail the capture. |
 | Voice playback | **`GET /captures/{id}/audio` (FileResponse)** | Original audio is retained and playable from the capture list — the transcript is searchable, the recording stays yours. |
 | Audio capture format | **MediaRecorder → webm/opus, uploaded to `POST /captures/audio`** | Browser-native, no upload dependency; backend accepts `.m4a/.webm/.wav/.mp3/.aiff/.ogg/.opus`. |
 | Correction loop | **Built: `chat_feedback` table + `POST /feedback`** | Flagging a wrong answer stores the query/sources/reason and re-indexes the top source capture (best-effort) so future retrievals reflect the correction — the deferred Phase-5 item, shipped in the UI polish pass. |
@@ -156,7 +158,7 @@ These are **hard constraints**, not preferences:
 1. **Install Ollama and pull the models** (once):
 
    ```bash
-   ollama pull llama3.2:3b        # chat + entity extraction
+   ollama pull llama3.2:3b        # chat answers + note facts
    ollama pull nomic-embed-text   # embeddings
    ollama pull qwen2.5vl:3b       # OCR (scanned docs only)
    ```
@@ -187,14 +189,17 @@ All settings are env-driven and read at import time (`backend/app/config.py`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NOTE_MASTER_DATA_DIR` | `data` (in `backend/`) | Where SQLite, graph, and uploaded files live (gitignored) |
+| `NOTE_MASTER_DATA_DIR` | `data` (in `backend/`) | Where SQLite and uploaded files live (gitignored) |
 | `OLLAMA_HOST` | `http://localhost:11434` | Must stay localhost |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Chat/answers model |
-| `OLLAMA_EXTRACT_MODEL` | `llama3.2:3b` | Entity-extraction (NER) model |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model (768-dim) |
+| `OLLAMA_EXTRACT_MODEL` | `llama3.2:3b` | Note-facts model (`app/memory/facts.py` — deterministic parsers cover transcripts/resumes, the 3b covers free notes) |
 | `OCR_ENABLED` | `0` | Set `1` to enable vision OCR for scanned/photographed docs (image uploads and image-only PDFs); when disabled, they fail ingestion by design |
 | `OCR_MODEL` | `qwen2.5vl:3b` | Vision model used for OCR |
 | `ASR_MODEL` | `base` | faster-whisper model size for voice transcription |
+| `MEMORY_ENABLED` | `1` | Set `0` to disable the supermemory knowledge layer (chat then answers nothing — honest not-found — with high-tier gate anchors still active) |
+| `MEMORY_URL` | `http://127.0.0.1:6767` | supermemory-server base URL (must stay localhost) |
+| `MEMORY_API_KEY` | *(from `~/.supermemory/env`)* | supermemory-server API key |
+| `MEMORY_CONTAINER_TAG` | `user_main` | supermemory container holding this app's docs |
 
 ---
 
@@ -213,9 +218,9 @@ Base URL: `http://127.0.0.1:8000`. The frontend proxies `/api/*` → backend via
 | `GET` | `/api/captures/{id}/audio` | Audio playback (FileResponse; voice captures) |
 | `GET` | `/api/captures/{id}/file` | Original uploaded document (FileResponse, media type by extension; doc captures only) |
 | `GET` | `/api/captures/history/{group_id}` | All versions of a document group |
-| `POST` | `/api/captures/{id}/restore` | Promote an older version to latest (flips `is_latest` in SQLite + graph) |
-| `PATCH` | `/api/captures/{id}` | Edit `content` (→ reindexes FTS/vectors/graph) and/or `note` (label-only updates reindex search without re-extraction) |
-| `DELETE` | `/api/captures/{id}` | Cascade: FTS rows, vector rows, graph node, files |
+| `POST` | `/api/captures/{id}/restore` | Promote an older version to latest (flips `is_latest` in SQLite + re-syncs memory) |
+| `PATCH` | `/api/captures/{id}` | Edit `content` (→ re-extraction + memory re-sync) and/or `note` (label-only update, no re-extraction) |
+| `DELETE` | `/api/captures/{id}` | Cascade: memory docs (forget), row, files |
 
 ### Chat
 | Method | Path | Description |
@@ -249,31 +254,29 @@ capture → route by type
   voice: faster-whisper transcription
   doc:  text layer? local parse : vision OCR (if OCR_ENABLED)
 → sensitivity tier (rules) → status: processing
-→ chunk (~800 chars, ~100 overlap)
-→ embed chunks (nomic-embed-text) → write capture_chunks + chunks_vec
-→ raw text → FTS5 (captures_fts)
-→ LLM NER → graph nodes/edges (best-effort)
 → status: indexed
+→ memory sync (skipped for high-tier captures):
+    deterministic facts (transcript/resume parsers) or 3b few-shot note facts
+    → mirror raw-content doc + fact docs into supermemory (customIds, upsert)
 ```
 
 **Query** (per chat message):
 
 ```
-query → parallel retrieval
-  FTS5 token search (stopword + single-char filtered, AND → OR fallback,
-                     edit-distance-1 typo variants boosted when AND fails)
-  vector KNN (12 candidates) → cosine re-score (≥0.5 threshold)
-  graph 1-hop + 2-hop entity walk
-→ reciprocal-rank fusion, deduped by capture, top 5
+query → scrub injection → classify intent (notes/code/general)
+  code/general → deterministic refusal (no retrieval, no LLM)
+→ retrieve from supermemory (similarity ≥ 0.45 floor, top 5 captures × 3 chunks,
+  14000-char budget) + local lexical scan of high-tier captures (gate anchors)
+→ deterministic transcript facts (semester courses, credits) answered in Python
+  before the gate — they never draw on sensitive captures
+→ if any high-tier hit: require valid X-Pin-Token (no LLM call otherwise)
 → document-intent queries ("get me my resume"): skip the LLM entirely,
   return one-line answer + show_document → UI opens the original file
-→ if any top hit is high-tier: require valid X-Pin-Token (no LLM call otherwise)
 → LLM with hardened grounding (instructions in a system message; the question
-  is an isolated user turn — injection text is data, never commands;
-  few-shot examples; context expansion per capture with duplicate-chunk dedupe)
+  is an isolated user turn — injection text is data, never commands; few-shot)
 → structured JSON {kind: fields|prose|not_found} — unparseable output is
   never surfaced, it becomes a not-found
-→ answer + sources + audit log (sensitive_access=1 when high content surfaced)
+→ answer + per-chunk sources + audit log (sensitive_access=1 when high content surfaced)
 ```
 
 ---
@@ -303,34 +306,37 @@ backend/
   app/
     main.py                 # FastAPI app, routers, CORS
     config.py               # env-driven settings (see table above)
-    db.py                   # SQLite + sqlite-vec wiring, schema init (guarded ALTER)
-    schema.sql              # captures, capture_chunks, captures_fts, chunks_vec, audit_log, app_settings
+    db.py                   # SQLite wiring, schema init (guarded ALTER)
+    schema.sql              # captures, audit_log, app_settings, chat_feedback, users
     storage.py              # file-on-disk storage helpers
-    graph.py                # LadybugDB schema, 1-hop/2-hop search, delete
+    memory/
+      client.py             # best-effort httpx client for supermemory (get_client singleton)
+      facts.py              # deterministic transcript/resume parsers + 3b few-shot note facts
+      sync.py               # sync_capture/forget_capture (RLock, customId upsert, delete retry)
     ingestion/
-      pipeline.py           # orchestration: extract → chunk → embed → classify → indexes
-      chunker.py            # ~800-char chunks, ~100 overlap
-      embeddings.py         # Ollama nomic-embed-text
-      extract.py            # LLM NER (JSON-only, few-shot) + normalization
+      pipeline.py           # orchestration: extract → classify → indexed → memory sync
+      extractors.py         # local text-layer extraction (pypdf/python-docx/openpyxl)
       classify.py           # rule-based sensitivity tiers (no LLM)
       asr.py                # faster-whisper lazy singleton, transcribe()
       ocr.py                # qwen2.5vl:3b vision OCR (OCR_ENABLED-gated)
     retrieval/
-      chat.py               # grounded chat: system-message prompt, parse (JSON recovery, not-found), context expansion
-      fts.py                # FTS5 search (stopword/single-char filter, AND→OR fallback, typo variants)
-      vector.py             # KNN + cosine re-score (0.5 threshold)
-      fusion.py             # reciprocal-rank fusion
+      chat.py               # grounded chat: system-message prompt, parse (JSON recovery, not-found), deterministic transcript facts
+      intent.py             # notes/code/general classifier + refusal
     guardrails/pin.py       # scrypt PIN, 30-min tokens, app_settings store
     routes/
       captures.py           # text/file/audio endpoints, versioning, delete cascade, playback, restore
-      chat.py               # retrieval + PIN gate + audit log
+      chat.py               # memory retrieval + PIN gate + audit log
       pin.py                # /pin/status|set|verify|delete
-      health.py             # /health backend + Ollama reachability
+      health.py             # /health backend + Ollama + supermemory reachability
       audit.py              # /audit log viewer
       feedback.py           # /feedback correction loop
   tests/
     test_api.py             # e2e API tests (llm-marked)
     test_units.py           # pure-logic unit tests (fast path)
+    test_memory_facts.py    # deterministic fact parsers
+    test_memory_sync.py     # memory sync/lifecycle (fake client)
+scripts/
+  run-supermemory.sh        # the ONLY supported way to launch supermemory-server
 frontend/
   components/
     app-shell (in page.tsx) # header (health, theme, settings) + two-pane grid + mobile tabs
@@ -349,14 +355,17 @@ frontend/
 
 ## Status & Roadmap
 
-**Shipped — v0.1 complete (Phases 1–4):**
+**Shipped — v1 complete (Phases 1–4):** capture pipeline (text + doc + voice) + SQLite/FTS5 + sqlite-vec + LadybugDB + grounded chat + voice + guardrails + UI polish + hardening (all in git history).
 
-1. Phase 1: capture pipeline (text + doc) + SQLite/FTS5 + grounded chat
-2. Phase 2: hybrid retrieval (sqlite-vec + RRF) + structured field-card answers
-3. Phase 3: LadybugDB property graph + LLM entity extraction + 3-way fusion
-4. Phase 4: voice notes (faster-whisper) + guardrails (sensitivity tiers, PIN gate, audit log, vision OCR)
+**Shipped — v2 (Supermemory), Phases 0–5:**
+1. Phase 0: install + localhost/RAM/fact-quality gate (GO)
+2. Phase 1: `app/memory/` client + env config + health
+3. Phase 2: ingest-side facts (deterministic transcript/resume parsers + 3b note facts) + lifecycle sync (RLock, customId upserts, delete retry)
+4. Phase 3: ask-side retrieval over supermemory (similarity floor, PIN gate anchors for high-tier captures, deterministic facts pre-gate, doc preview)
+5. Phase 4: v1 retrieval stack retired (FTS5/sqlite-vec/LadybugDB deleted; docs amended)
+6. Phase 5: `@memory` e2e battery (pending)
 
-**Deferred (Phase 5+, user-approved):** encryption at rest.
+**Deferred (user-approved):** encryption at rest.
 
 **Out of scope for v1:** multi-user collaboration, third-party integrations, native mobile app.
 

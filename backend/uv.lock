@@ -65,7 +65,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "faster-whisper" },
-    { name = "ladybug" },
     { name = "ollama" },
     { name = "openpyxl" },
     { name = "pydantic" },
@@ -73,7 +72,6 @@ dependencies = [
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "python-multipart" },
-    { name = "sqlite-vec" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -87,7 +85,6 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "faster-whisper", specifier = ">=1.2.1" },
-    { name = "ladybug", specifier = ">=0.19.1" },
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pydantic", specifier = ">=2.13.4" },
@@ -95,7 +92,6 @@ requires-dist = [
     { name = "pypdf", specifier = ">=6.15.0" },
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "sqlite-vec", specifier = ">=0.1.9" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.2" },
 ]
 
@@ -343,22 +339,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
-]
-
-[[package]]
-name = "ladybug"
-version = "0.19.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/84/c6/300b8b384f58a81d42d70ae26c7e7c4920c84502546b78278dd32dc39dfd/ladybug-0.19.1.tar.gz", hash = "sha256:cf3a510e396794ba4702ed0423b81a5502070a9dfbdb6ea97a5766f27565ec05", size = 10306327, upload-time = "2026-08-04T23:32:43.263Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/e1/817caca958a68585052236020dce6b6aac00bd3d5a4ae3e87dce9f864070/ladybug-0.19.1-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:cf4239deeadf45252563059a9185b6955f5c80b370c49fc5097bb704da8c821c", size = 4571434, upload-time = "2026-08-04T23:32:23.178Z" },
-    { url = "https://files.pythonhosted.org/packages/10/7e/e54cbbe1c29aea3f45591f4e368ee95ffae305308c6a54e519a62cedeaef/ladybug-0.19.1-cp314-cp314-macosx_15_0_x86_64.whl", hash = "sha256:f4d10576fb2188574f19dd4efa99a79e5de5d2e0a6fd3e3def0fe3b1f80fff8d", size = 4914339, upload-time = "2026-08-04T23:32:25.227Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/6c/8062703f0976062951797c355042cb3861d879b4fdaf874a432430e1ab0c/ladybug-0.19.1-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3c720e019ebcb7c4fb2e3b5a274c6d2034da72fdf43eeaa6b2a6805d48fb3c91", size = 7375461, upload-time = "2026-08-04T23:32:27.321Z" },
-    { url = "https://files.pythonhosted.org/packages/49/f0/77add7f65f72fd8d5e5b156701e1d16926a617de9075cf655951b5c4bd72/ladybug-0.19.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8446e69edc766b9acf61a6af82af6eb0570067196c5c94716a8865bf7ea9b555", size = 8277802, upload-time = "2026-08-04T23:32:29.629Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/5f/f26ab4436f89f662c265e900e450aa27ec40f4f9d949fb27a9d4017292e2/ladybug-0.19.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:3d9b0deffe428524f39547668800a81734157340987aeb66ed01f879c3f277dc", size = 8203681, upload-time = "2026-08-04T23:32:32.014Z" },
-    { url = "https://files.pythonhosted.org/packages/55/39/ab516c40b96580e493a770ae49fc214fdc2e4a6e6f8f0d44284a2ef631ac/ladybug-0.19.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:e334151ca486e84efa4a5af10861728fe395f000e44bd050a94d1e877b143df0", size = 9134762, upload-time = "2026-08-04T23:32:35.03Z" },
-    { url = "https://files.pythonhosted.org/packages/16/fb/e6ed7abcba202d5fab76ec5a6acfb3358e6ea7e5730059c96593acb7deb6/ladybug-0.19.1-cp314-cp314-win_amd64.whl", hash = "sha256:b213587ae4f86e34008f8d4a44e1ac8467003c5c03a19244d9ee4e3e431c5775", size = 5904867, upload-time = "2026-08-04T23:32:37.923Z" },
-    { url = "https://files.pythonhosted.org/packages/d1/a6/94bdc981fe0c55537b84c0549472fafcdd14eb2ca4b179ee34bbd536dc76/ladybug-0.19.1-cp314-cp314-win_arm64.whl", hash = "sha256:db24c840bbb931b7f2fd959acd1e55360b997576c9b18e5ac1a1cd25d7b7ea8b", size = 8472851, upload-time = "2026-08-04T23:32:40.304Z" },
 ]
 
 [[package]]
@@ -706,18 +686,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6d/44/f5da03a8ef95d369145c5bb53050e7877c9f3d312e128605fd9504829143/setuptools-84.0.0.tar.gz", hash = "sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73", size = 1168449, upload-time = "2026-08-08T18:27:58.365Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl", hash = "sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670", size = 818216, upload-time = "2026-08-08T18:27:56.719Z" },
-]
-
-[[package]]
-name = "sqlite-vec"
-version = "0.1.9"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/85/9fad0045d8e7c8df3e0fa5a56c630e8e15ad6e5ca2e6106fceb666aa6638/sqlite_vec-0.1.9-py3-none-macosx_10_6_x86_64.whl", hash = "sha256:1b62a7f0a060d9475575d4e599bbf94a13d85af896bc1ce86ee80d1b5b48e5fb", size = 131171, upload-time = "2026-03-31T08:02:31.717Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/3d/3677e0cd2f92e5ebc43cd29fbf565b75582bff1ccfa0b8327c7508e1084f/sqlite_vec-0.1.9-py3-none-macosx_11_0_arm64.whl", hash = "sha256:1d52e30513bae4cc9778ddbf6145610434081be4c3afe57cd877893bad9f6b6c", size = 165434, upload-time = "2026-03-31T08:02:32.712Z" },
-    { url = "https://files.pythonhosted.org/packages/00/d4/f2b936d3bdc38eadcbd2a87875815db36430fab0363182ba5d12cd8e0b51/sqlite_vec-0.1.9-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4e921e592f24a5f9a18f590b6ddd530eb637e2d474e3b1972f9bbeb773aa3cb9", size = 160076, upload-time = "2026-03-31T08:02:33.796Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/ad/6afd073b0f817b3e03f9e37ad626ae341805891f23c74b5292818f49ac63/sqlite_vec-0.1.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux1_x86_64.whl", hash = "sha256:1515727990b49e79bcaf75fdee2ffc7d461f8b66905013231251f1c8938e7786", size = 163388, upload-time = "2026-03-31T08:02:34.888Z" },
-    { url = "https://files.pythonhosted.org/packages/42/89/81b2907cda14e566b9bf215e2ad82fc9b349edf07d2010756ffdb902f328/sqlite_vec-0.1.9-py3-none-win_amd64.whl", hash = "sha256:4a28dc12fa4b53d7b1dced22da2488fade444e96b5d16fd2d698cd670675cf32", size = 292804, upload-time = "2026-03-31T08:02:36.035Z" },
 ]
 
 [[package]]

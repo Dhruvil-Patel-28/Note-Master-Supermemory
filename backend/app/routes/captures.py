@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from .. import db, graph, storage
+from .. import db, storage
 from ..ingestion.extractors import SUPPORTED_EXTENSIONS
 from ..ingestion.pipeline import create_capture
 from ..ingestion.tasks import schedule_ingest
@@ -132,10 +132,6 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
             )
     if content is not None:
         schedule_ingest(background, capture_id)
-    else:
-        from ..ingestion.pipeline import rebuild_fts
-
-        rebuild_fts(capture_id)
     return _to_out(_get_capture(capture_id))
 
 
@@ -145,13 +141,7 @@ def delete_capture(capture_id: int):
     from ..memory.sync import forget_capture
 
     forget_capture(capture_id)
-    graph.delete_capture(capture_id)
     with db.get_conn() as conn:
-        conn.execute(
-            "DELETE FROM chunks_vec WHERE rowid IN (SELECT id FROM capture_chunks WHERE capture_id = ?)",
-            (capture_id,),
-        )
-        conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
         conn.execute("DELETE FROM captures WHERE id = ?", (capture_id,))
         if row["document_group_id"] is not None:
             conn.execute(
@@ -174,11 +164,6 @@ def restore_capture(capture_id: int):
     if row["is_latest"]:
         raise HTTPException(status_code=409, detail="capture is already the latest version")
     with db.get_conn() as conn:
-        group_rows = conn.execute(
-            "SELECT id FROM captures WHERE document_group_id = ?",
-            (row["document_group_id"],),
-        ).fetchall()
-        group_ids = [r["id"] for r in group_rows]
         conn.execute(
             "UPDATE captures SET is_latest = 0 WHERE document_group_id = ?",
             (row["document_group_id"],),
@@ -187,7 +172,6 @@ def restore_capture(capture_id: int):
             "UPDATE captures SET is_latest = 1 WHERE id = ?",
             (capture_id,),
         )
-    graph.restore_capture(capture_id, group_ids)
     from ..memory.sync import sync_capture
 
     sync_capture(capture_id)

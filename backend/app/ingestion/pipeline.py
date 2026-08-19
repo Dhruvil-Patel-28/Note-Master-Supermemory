@@ -1,47 +1,13 @@
 from pathlib import Path
-import array
 import logging
 
-from .. import db, graph, storage
+from .. import db, storage
 from ..memory.sync import sync_capture
 from .asr import transcribe
-from .chunker import chunk_text
 from .classify import classify
-from .embeddings import embed_texts
 from .ocr import extract_doc
 
 logger = logging.getLogger(__name__)
-
-
-def _write_chunks(conn, capture_id: int, content: str) -> None:
-    conn.execute("DELETE FROM capture_chunks WHERE capture_id = ?", (capture_id,))
-    chunks = chunk_text(content)
-    if not chunks:
-        return
-    embeddings = embed_texts(chunks)
-    for i, (text, embedding) in enumerate(zip(chunks, embeddings)):
-        cur = conn.execute(
-            "INSERT INTO capture_chunks (capture_id, chunk_index, text, embedding) VALUES (?, ?, ?, ?)",
-            (capture_id, i, text, array.array("f", embedding).tobytes()),
-        )
-        conn.execute(
-            "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
-            (cur.lastrowid, str(embedding)),
-        )
-
-
-def _write_graph(conn, capture_id: int, content: str) -> None:
-    sibling_ids = [
-        r[0]
-        for r in conn.execute(
-            "SELECT id FROM captures WHERE document_group_id = (SELECT document_group_id FROM captures WHERE id = ?) AND id != ?",
-            (capture_id, capture_id),
-        ).fetchall()
-    ]
-    try:
-        graph.write_capture(capture_id, content, sibling_ids)
-    except Exception as exc:
-        logger.warning("graph write failed for capture %s: %s", capture_id, exc)
 
 
 def create_capture(
@@ -99,32 +65,6 @@ def run_pipeline(capture_id: int) -> None:
         raise
 
 
-def rebuild_fts(capture_id: int, conn=None) -> None:
-    if conn is None:
-        with db.get_conn() as conn:
-            _rebuild_fts(conn, capture_id)
-        return
-    _rebuild_fts(conn, capture_id)
-
-
-def _rebuild_fts(conn, capture_id: int) -> None:
-    row = conn.execute(
-        "SELECT content, original_filename, note FROM captures WHERE id = ?", (capture_id,)
-    ).fetchone()
-    if row is None:
-        return
-    fts_text = row["content"]
-    if row["original_filename"]:
-        fts_text = f"{row['original_filename']}\n{fts_text}"
-    if row["note"]:
-        fts_text = f"{row['note']}\n{fts_text}"
-    conn.execute("DELETE FROM captures_fts WHERE rowid = ?", (capture_id,))
-    conn.execute(
-        "INSERT INTO captures_fts (rowid, content) VALUES (?, ?)",
-        (capture_id, fts_text),
-    )
-
-
 def _extract_and_index(capture_id: int) -> None:
     with db.get_conn() as conn:
         row = conn.execute("SELECT * FROM captures WHERE id = ?", (capture_id,)).fetchone()
@@ -139,7 +79,4 @@ def _extract_and_index(capture_id: int) -> None:
             "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ? WHERE id = ?",
             (content, classify(content), capture_id),
         )
-        rebuild_fts(capture_id, conn)
-        _write_chunks(conn, capture_id, content)
-        _write_graph(conn, capture_id, content)
     sync_capture(capture_id)
