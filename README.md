@@ -91,7 +91,7 @@ Env-driven, read at import time (`backend/app/config.py`). Key variables:
 |---|---|---|
 | `OLLAMA_MODEL` | `llama3.2:3b` | Chat/answers model |
 | `OLLAMA_EXTRACT_MODEL` | `llama3.2:3b` | Note-facts model |
-| `OCR_ENABLED` | `0` | Enable vision OCR for scanned/photographed docs |
+| `OCR_ENABLED` | `1` | Vision OCR for scanned/photographed docs (image uploads and image-only PDFs); set `0` to disable (then they fail ingestion by design) |
 | `MEMORY_ENABLED` | `1` | Disable → chat answers nothing (honest not-found) |
 | `MEMORY_URL` | `http://127.0.0.1:6767` | supermemory-server base URL |
 | `MEMORY_CONTAINER_TAG` | `user_main` | supermemory container holding app docs |
