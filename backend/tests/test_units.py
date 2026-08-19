@@ -155,35 +155,6 @@ class TestIntentClassifier:
         assert intent.classify("print my name") == "general"
 
 
-class TestAnchorValidation:
-    def test_anchor_validation_filters_junk(self, monkeypatch):
-        from app.ingestion.pipeline import create_capture, rebuild_fts
-        from app.routes import chat as chat_routes
-
-        cap = create_capture("text", content="batteries mangoes institute college")
-        rebuild_fts(cap)
-
-        class Stub:
-            def chat(self, **kw):
-                return {
-                    "message": {
-                        "content": '{"terms": ["institute", "zzzghost", "a", "2nd", "and", "institute"]}'
-                    }
-                }
-
-        monkeypatch.setattr(chat_routes, "_client", lambda: Stub())
-        assert chat_routes._expand_anchors("where do i study") == ["institute"]
-
-    def test_anchor_llm_failure_returns_empty(self, monkeypatch):
-        from app.routes import chat as chat_routes
-
-        def boom(*a, **k):
-            raise RuntimeError("no ollama")
-
-        monkeypatch.setattr(chat_routes, "_client", boom)
-        assert chat_routes._expand_anchors("where do i study") == []
-
-
 class TestSemesterParser:
     def test_semester_number_detection(self):
         assert _semester_number("give me my 6th sem courses") == 6

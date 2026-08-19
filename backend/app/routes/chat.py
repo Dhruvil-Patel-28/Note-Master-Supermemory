@@ -1,23 +1,12 @@
-import json
 import re
 
 from fastapi import APIRouter, Header, HTTPException
 
-from .. import db, graph
+from .. import db
 from ..config import settings
 from ..guardrails import pin
-from ..ingestion.extract import extract
-from ..retrieval import vector
-from ..retrieval.chat import (
-    _client,
-    _extract_json,
-    expand_hits,
-    grounded_answer,
-    scrub_injection,
-    transcript_fact_answer,
-)
-from ..retrieval.fts import _STOPWORDS, search as fts_search
-from ..retrieval.fusion import fuse
+from ..memory.client import get_client
+from ..retrieval.chat import grounded_answer, scrub_injection, transcript_fact_answer
 from ..retrieval.intent import REFUSAL_ANSWER, classify as classify_intent
 from ..schemas import (
     ChatRequest,
@@ -42,6 +31,17 @@ _DOC_NOUNS = {
     "certificate", "license", "licence", "passport", "aadhaar", "aadhar", "pan",
 }
 
+_MEMORY_LIMIT = 30
+_MEMORY_TOP_CAPTURES = 5
+_MEMORY_CHUNKS_PER_CAPTURE = 3
+_CONTEXT_BUDGET = 14000
+# Honest not-found protection: supermemory ranks EVERY doc for any query
+# (threshold 0), so out-of-vocabulary questions ("do i own a zebra") would
+# drag unrelated chunks — including a high-tier PAN note — into the top-5 and
+# gate an innocent query. v1's MIN_COSINE_DISTANCE=0.5 did the same job; the
+# floor is set below the observed relevant band (0.44-0.55, fact docs higher).
+MIN_MEMORY_SIMILARITY = 0.45
+
 
 def _document_intent(query: str) -> bool:
     words = set(re.findall(r"[a-z]+", query.lower()))
@@ -62,15 +62,84 @@ def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
     return None
 
 
-_ACADEMIC_WORDS = {
-    "semester", "sem", "term", "trimester", "cgpa", "gpa", "marksheet",
-    "transcript", "grade", "grades", "result", "results", "course", "courses",
-    "academic", "marks", "score", "credit", "credits",
-}
-# Transcripts label semesters with bare digits ("2 / DIGITAL ELECTRONICS / ...")
-# — no "semester" word to match. Academic-intent queries get these doc-ish terms
-# appended to the FTS query so the transcript surfaces.
-_ACADEMIC_EXTRA_TERMS = ["transcript", "marksheet"]
+def _high_tier_local_matches(query: str) -> list[dict]:
+    """Lexical scan of latest high-tier captures (local-only by design, never
+    in supermemory). Word-overlap on the query's content terms — the same
+    overlap the PIN gate has always relied on; single-char and stopwords are
+    dropped so "a" / "in" can't gate on every high doc."""
+    from ..retrieval.fts import _STOPWORDS
+
+    qwords = {
+        w for w in re.findall(r"[a-z]+", query.lower()) if len(w) >= 2 and w not in _STOPWORDS
+    }
+    if not qwords:
+        return []
+    rows = []
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, content, note, original_filename FROM captures "
+            "WHERE is_latest = 1 AND sensitivity_tier = 'high'"
+        ).fetchall()
+    hits = []
+    for r in rows:
+        text = " ".join(x or "" for x in (r["content"], r["note"], r["original_filename"]))
+        cwords = {
+            w for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 2 and w not in _STOPWORDS
+        }
+        if qwords & cwords:
+            content = (r["content"] or "").strip()
+            if content:
+                hits.append({"capture_id": r["id"], "content": content[:600], "similarity": 1.0})
+    return hits
+
+
+def _memory_hits(query: str) -> list[dict]:
+    """Retrieve from supermemory: chunk hits grouped per capture (top chunks by
+    similarity), capped at the top captures, with a v1-style context budget so
+    duplicated uploads can't starve the LLM context. Disabled/unreachable
+    memory degrades to an empty hit list (honest not-found, no local stack).
+
+    High-tier captures never enter memory, so a "what is my pan number" query
+    would otherwise rank a low-tier note ("my other number is 1 2 3 4 5 6 7")
+    and answer without ever hitting the PIN gate. A local lexical scan of
+    latest high-tier captures re-attaches them as gate anchors (similarity 1.0
+    — the floor never drops them), restoring v1's gate semantics: the query is
+    gated, and after unlock the capture's content is in the LLM context."""
+    if not settings.memory_enabled:
+        return []
+    hits = _high_tier_local_matches(query)
+    try:
+        results = get_client().search(query, limit=_MEMORY_LIMIT, threshold=0.0)
+    except Exception:
+        return hits
+    per_capture: dict[int, list[dict]] = {}
+    for h in hits:
+        per_capture.setdefault(h["capture_id"], []).append(h)
+    for r in results:
+        if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
+            continue
+        try:
+            cid = int(r["metadata"].get("capture_id", ""))
+        except (TypeError, ValueError):
+            continue
+        per_capture.setdefault(cid, []).append(r)
+    if not per_capture:
+        return []
+    hits: list[dict] = []
+    budget = _CONTEXT_BUDGET
+    for cid in sorted(
+        per_capture,
+        key=lambda c: max(x["similarity"] for x in per_capture[c]),
+        reverse=True,
+    )[:_MEMORY_TOP_CAPTURES]:
+        for r in sorted(per_capture[cid], key=lambda x: -x["similarity"])[:_MEMORY_CHUNKS_PER_CAPTURE]:
+            if budget <= 0:
+                break
+            hits.append({"capture_id": cid, "snippet": r["content"], "similarity": r["similarity"]})
+            budget -= len(r["content"])
+        if budget <= 0:
+            break
+    return hits
 
 
 @router.post("", response_model=ChatResponse)
@@ -89,40 +158,8 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
             sources=[],
             needs_pin=False,
         )
-    query_words = set(re.findall(r"[a-z]+", query.lower()))
-    fts_query = query
-    if query_words & _ACADEMIC_WORDS:
-        fts_query = " ".join([query] + _ACADEMIC_EXTRA_TERMS)
-    fts_hits = fts_search(fts_query, limit=10, include_old_versions=payload.include_history)
-    vector_hits = []
-    try:
-        vector_hits = vector.search(query, limit=10, include_old_versions=payload.include_history)
-    except Exception:
-        pass
-    graph_hits = []
-    try:
-        entities = extract(query)["entities"]
-        graph_hits = graph.search(
-            [e["name"] for e in entities],
-            include_old_versions=payload.include_history,
-        )
-    except Exception:
-        pass
-    hits = fuse(fts_hits, vector_hits, graph_hits, limit=5)
-    # Lexical-gap cure: when retrieval comes back empty or with no matching
-    # terms, ask the LLM what words the user's notes might use for this concept
-    # and re-run FTS with the validated ones — the general fix for "where do I
-    # study" (the notes say 'institute', never 'study'), no per-case lists.
-    if not hits or not any("<b>" in h["snippet"] for h in hits):
-        anchors = _expand_anchors(query)
-        if anchors:
-            fts_hits = fts_search(
-                " ".join([query] + anchors),
-                limit=10,
-                include_old_versions=payload.include_history,
-            )
-            hits = fuse(fts_hits, vector_hits, graph_hits, limit=5)
-    context_hits = expand_hits(hits)
+
+    hits = _memory_hits(query)
 
     tiers = _sensitivity_tiers([h["capture_id"] for h in hits])
     has_high = any(t == "high" for t in tiers.values())
@@ -158,7 +195,7 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
         answer, found, structured = det
     else:
         try:
-            answer, found, structured = grounded_answer(query, context_hits)
+            answer, found, structured = grounded_answer(query, hits)
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
@@ -204,69 +241,3 @@ def _sensitivity_tiers(capture_ids: list[int]) -> dict[int, str]:
             capture_ids,
         ).fetchall()
     return {r["id"]: r["sensitivity_tier"] for r in rows}
-
-
-_ANCHOR_SYSTEM = (
-    "A user asked a question about their own personal notes. "
-    "The following words actually appear in the user's notes: {vocab}\n"
-    "Pick up to 5 words FROM THAT LIST that could relate to the question's concept — "
-    'the words the user\'s notes would use. Reply ONLY with JSON: {{"terms": ["word1", "word2", ...]}}.\n'
-    'Example: Question: "where do i study" -> {{"terms": ["institute", "college", "education"]}}\n'
-    'Example: Question: "who do i work for" -> {{"terms": ["work", "company"]}}\n'
-)
-
-_WORD_RE = re.compile(r"[^\w\s]")
-
-
-def _vocabulary(limit: int = 60) -> list[str]:
-    """Content words actually present in the user's latest notes — sampled from
-    each capture's opening window (headers/first lines carry the distinctive
-    facts: institute name, work, contact) so long bodies of repeated codes and
-    duplicated uploads don't drown them out."""
-    merged: set[str] = set()
-    with db.get_conn() as conn:
-        rows = conn.execute(
-            "SELECT content FROM captures WHERE is_latest = 1 ORDER BY id DESC LIMIT 20"
-        ).fetchall()
-    for r in rows:
-        window = r["content"][:300]
-        counts: dict[str, int] = {}
-        for w in _WORD_RE.sub(" ", window.lower()).split():
-            if len(w) >= 3 and w not in _STOPWORDS and not w.isdigit():
-                counts[w] = counts.get(w, 0) + 1
-        if counts:
-            top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
-            merged |= {w for w, _ in top}
-    return sorted(merged)[:limit]
-
-
-def _expand_anchors(query: str) -> list[str]:
-    """Have the LLM pick words the user's notes might use for this concept,
-    restricted to the user's actual vocabulary — hallucinated anchors can't
-    even be suggested, and anything picked is index-verified by construction."""
-    vocab = _vocabulary()
-    if not vocab:
-        return []
-    try:
-        raw = _client().chat(
-            model=settings.ollama_model,
-            messages=[
-                {"role": "system", "content": _ANCHOR_SYSTEM.format(vocab=", ".join(vocab))},
-                {"role": "user", "content": query},
-            ],
-            options={"temperature": 0.1, "think": False, "num_predict": 512},
-        )["message"]["content"]
-        payload = json.loads(_extract_json(raw) or "{}")
-        terms = payload.get("terms") or []
-    except Exception:
-        return []
-    if not isinstance(terms, list):
-        return []
-    valid: list[str] = []
-    seen: set[str] = set()
-    for t in terms:
-        t = str(t).strip().lower()
-        if t in vocab and t not in seen:
-            valid.append(t)
-            seen.add(t)
-    return valid[:5]
