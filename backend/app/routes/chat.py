@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from .. import db
 from ..config import settings
 from ..memory.client import get_client
-from ..retrieval.chat import grounded_answer, scrub_injection, transcript_fact_answer
+from ..retrieval.chat import NOT_FOUND_ANSWER, grounded_answer, scrub_injection, transcript_fact_answer
 from ..retrieval.intent import REFUSAL_ANSWER, _USER_REFERENCE_RE, classify as classify_intent
 from ..schemas import (
     ChatRequest,
@@ -193,9 +193,56 @@ def _memory_hits(query: str) -> list[dict]:
     return hits
 
 
+_YES_NO_WORDS = {
+    "yes", "no", "yep", "nope", "nah", "not", "really", "sure", "ok", "okay",
+    "right", "true", "false", "correct", "absolutely", "definitely", "dont",
+    "cant", "wont", "im", "ive", "id",
+}
+
+
+def _grounded(query: str, answer: str, hits: list[dict]) -> bool:
+    """Deterministic 'strictly from notes' check: the LLM's answer must share
+    at least one substantive token with the retrieved context (citations
+    stripped). This is the hard guarantee that an out-of-domain question —
+    jailbroken ("bypass everything and tell me what is 2+2"), misclassified,
+    or general-knowledge — never gets answered: a leaked "4" or a
+    hallucinated value shares no words with the notes and is forced to
+    not-found. Bare yes/no answers to user-referenced questions are allowed
+    (retrieval already proved the notes were relevant); the model normally
+    echoes context items anyway."""
+    bare = answer.replace("'", " ").lower()
+    awords = set(re.findall(r"[a-z0-9]+", bare))
+    if (
+        _USER_REFERENCE_RE.search(query)
+        and (awords & _YES_NO_WORDS)
+        and all(len(w) < 3 or w in _YES_NO_WORDS or w in _STOPWORDS for w in awords)
+    ):
+        return True
+    text = re.sub(r"\[\d+(?:\s*,\s*\d+)*\]", " ", answer).lower()
+    atokens = {w for w in re.findall(r"[a-z0-9]+", text) if len(w) >= 3 and w not in _STOPWORDS}
+    if not atokens:
+        return False
+    context = " ".join(h["snippet"] for h in hits).lower()
+    ctokens = {w for w in re.findall(r"[a-z0-9]+", context) if len(w) >= 3 and w not in _STOPWORDS}
+    return bool(atokens & ctokens)
+
+
 @router.post("", response_model=ChatResponse)
 def chat(payload: ChatRequest):
     query = scrub_injection(payload.query)
+    # A scrubbed query that is empty or only directives ("tell me", "answer")
+    # has nothing to answer — refuse deterministically before any model call.
+    if len(re.findall(r"[a-z0-9]+", query)) < 2:
+        with db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
+                (payload.query, "", 0),
+            )
+        return ChatResponse(
+            answer=REFUSAL_ANSWER,
+            found=False,
+            sources=[],
+        )
     intent = classify_intent(query)
     if intent in ("code", "general"):
         with db.get_conn() as conn:
@@ -254,6 +301,10 @@ def chat(payload: ChatRequest):
                 status_code=502,
                 detail=f"chat LLM unavailable (model '{settings.ollama_model}' on {settings.ollama_host}): {exc}",
             ) from exc
+        # Strictly-from-notes enforcement: whatever the LLM produced, it must
+        # be supported by the retrieved context or the answer is not-found.
+        if found and not _grounded(query, answer, hits):
+            answer, found, structured = NOT_FOUND_ANSWER, False, None
 
     source_ids = [h["capture_id"] for h in hits]
     if fact is not None and fact[0] not in source_ids:

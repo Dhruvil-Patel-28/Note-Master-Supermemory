@@ -102,8 +102,8 @@ Env-driven, read at import time (`backend/app/config.py`). Key variables:
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 92 tests (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 71 tests, no Ollama needed
+uv run pytest tests                  # full suite: 98 tests (real Ollama + whisper)
+uv run pytest tests -m "not llm"     # pure logic: 75 tests, no Ollama needed
 bash ../scripts/run-memory-tests.sh  # live e2e battery vs supermemory-server (5 tests)
 ```
 
