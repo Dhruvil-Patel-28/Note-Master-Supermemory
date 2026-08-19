@@ -2,7 +2,7 @@
 
 **Local-first personal notes app with grounded AI retrieval.**
 
-Dump text notes, voice memos, and documents into a chat-style composer, then ask anything in natural language and get a structured, cited answer pulled from your own data — with a PIN gate for sensitive documents.
+Dump text notes, voice memos, and documents into a chat-style composer, then ask anything in natural language and get a structured, cited answer pulled from your own data. Sensitive documents (Aadhaar, PAN, bank statements) are stored and answerable like everything else, badged in chat and audit-logged.
 
 Everything runs on your machine: local Ollama models, a local supermemory-server for semantic retrieval, and SQLite for app state. No hosted APIs, no telemetry, nothing leaves your computer.
 
@@ -11,7 +11,7 @@ Everything runs on your machine: local Ollama models, a local supermemory-server
 - **Capture** — text notes, voice memos (local ASR transcription, original audio retained), and documents (PDFs, images, Word, Excel; vision OCR for scanned/photographed docs)
 - **Grounded chat** — answers come only from your captured content, with citations, structured field-card answers, an honest not-found path, and typo tolerance
 - **Document access** — "show me my resume" opens the original uploaded file in a preview, never an extracted-text dump
-- **Guardrails** — sensitivity tiers (`none`/`moderate`/`high`) assigned at ingestion; `high` (ID/financial docs) is PIN-gated at retrieval; every sensitive retrieval is audit-logged; prompt-injection resistant
+- **Guardrails** — sensitivity tiers (`none`/`moderate`/`high`) assigned at ingestion, surfaced as labels: sensitive sources are badged in chat and every sensitive retrieval is audit-logged (informational — nothing is blocked); prompt-injection resistant
 - **Versioning** — re-uploading a document creates a new version (old ones retained, restorable); editable labels without re-extraction
 - **Correction loop** — flag a wrong answer to store feedback and re-index the source
 - **UI** — dark/light themes, responsive two-pane layout, playback for voice notes
@@ -39,7 +39,7 @@ Everything runs on your machine: local Ollama models, a local supermemory-server
               · qwen2.5vl:3b — OCR (opt-in)
 ```
 
-Three runtimes, all localhost. Every non-high capture mirrors into supermemory as a raw-content doc plus deterministic fact docs; chat retrieves over it semantically with a similarity floor. High-tier captures never enter memory — the PIN gate re-attaches them via a local scan.
+Three runtimes, all localhost. Every capture — all sensitivity tiers — mirrors into supermemory as a raw-content doc plus deterministic fact docs; chat retrieves over it semantically with a similarity floor. Tiers are labels, not barriers: sensitive docs sync, answer, and are audit-logged like any other.
 
 ## Tech stack
 
@@ -102,8 +102,8 @@ Env-driven, read at import time (`backend/app/config.py`). Key variables:
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 79 tests (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 60 tests, no Ollama needed
+uv run pytest tests                  # full suite: 92 tests (real Ollama + whisper)
+uv run pytest tests -m "not llm"     # pure logic: 71 tests, no Ollama needed
 bash ../scripts/run-memory-tests.sh  # live e2e battery vs supermemory-server (5 tests)
 ```
 

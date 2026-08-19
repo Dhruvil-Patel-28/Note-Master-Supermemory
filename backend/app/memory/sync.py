@@ -47,8 +47,7 @@ def _delete_with_retry(client, doc_id: str) -> bool:
 def forget_capture(capture_id: int) -> None:
     """Delete all supermemory docs owned by a capture (best-effort).
 
-    Called on capture delete, edit re-ingest, version demotion, and for
-    high-tier captures (which must never linger in memory).
+    Called on capture delete, edit re-ingest, version demotion.
     """
     if not settings.memory_enabled:
         return
@@ -76,12 +75,11 @@ def sync_capture(capture_id: int) -> None:
     """Push a capture into supermemory as one raw-content doc + fact docs.
 
     Design rules (handoff §3, carried from v1):
-      - high-tier captures are NEVER ingested; any stale docs are forgotten
       - memory holds only the latest version per document group — syncing a
         capture forgets its siblings first (is_latest semantics supermemory
         doesn't know)
       - every doc keeps capture_id / sensitivity_tier / type metadata so
-        retrieval can cite sources and gate high-tier content
+        retrieval can cite sources (tiers are labels only — nothing is gated)
       - docs carry deterministic customIds (nm-{capture_id}-{slot}) so edits
         upsert in place instead of racing deletes against the ingester
         (DELETE during processing returns 409)
@@ -94,8 +92,6 @@ def sync_capture(capture_id: int) -> None:
             with db.get_conn() as conn:
                 row = conn.execute("SELECT * FROM captures WHERE id = ?", (capture_id,)).fetchone()
                 if row is None:
-                    return
-                if row["sensitivity_tier"] == "high":
                     return
                 sibling_ids = [
                     r["id"]

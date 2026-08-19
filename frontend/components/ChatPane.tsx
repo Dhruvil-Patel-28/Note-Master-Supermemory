@@ -13,18 +13,15 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
-import { toast } from "sonner";
 import { api, Capture, ChatResponse, ChatSource, ShowDocument } from "@/lib/api";
 import Markdown from "@/components/markdown";
 import FeedbackDialog from "@/components/feedback-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -45,7 +42,6 @@ interface Message {
   sources?: ChatResponse["sources"];
   structured?: ChatResponse["structured"];
   sensitive?: boolean;
-  needsPin?: boolean;
 }
 
 function newMessageId(): string {
@@ -163,7 +159,7 @@ function AssistantMessage({
         ) : (
           <Markdown>{m.text}</Markdown>
         )}
-        {m.found === false && !m.sensitive && !m.needsPin && (
+        {m.found === false && !m.sensitive && (
           <p className="mt-1.5 text-xs text-muted-foreground">
             No grounded answer — check your captures.
           </p>
@@ -200,87 +196,6 @@ function AssistantMessage({
         </Button>
       </div>
     </div>
-  );
-}
-
-function PinDialog({
-  open,
-  onOpenChange,
-  setup,
-  onVerified,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  setup: boolean;
-  onVerified: (token: string) => void;
-}) {
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit() {
-    if (pinInput.length < 4) {
-      setPinError("PIN must be at least 4 characters");
-      return;
-    }
-    setBusy(true);
-    setPinError(null);
-    try {
-      let token: string;
-      if (setup) {
-        await api.pinSet(pinInput);
-        token = (await api.pinVerify(pinInput)).token;
-      } else {
-        token = (await api.pinVerify(pinInput)).token;
-      }
-      sessionStorage.setItem("nm-pin-token", token);
-      toast.success(setup ? "PIN set — unlocked" : "Unlocked");
-      setPinInput("");
-      onOpenChange(false);
-      onVerified(token);
-    } catch (e) {
-      setPinError(e instanceof Error ? e.message : "Invalid PIN");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{setup ? "Set a PIN for sensitive documents" : "PIN required"}</DialogTitle>
-          <DialogDescription>
-            {setup
-              ? "A PIN gates ID/financial documents (Aadhaar, PAN, bank statements) at retrieval."
-              : "Your question touches sensitive documents. Enter your PIN to unlock."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-1.5">
-          <Label htmlFor="pin-input">PIN</Label>
-          <Input
-            id="pin-input"
-            type="password"
-            autoFocus
-            value={pinInput}
-            onChange={(e) => setPinInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
-            }}
-            placeholder="PIN"
-          />
-          {pinError && <p className="text-xs text-destructive">{pinError}</p>}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={busy}>
-            {setup ? "Set PIN" : "Unlock"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -340,18 +255,15 @@ export default function ChatPane({
   ]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
-  const [pinOpen, setPinOpen] = useState(false);
-  const [pinSetup, setPinSetup] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<Message | null>(null);
   const [preview, setPreview] = useState<ShowDocument | null>(null);
-  const pendingQueryRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, busy]);
 
-  async function ask(q?: string, retryToken?: string | null) {
+  async function ask(q?: string) {
     const text = (q ?? query).trim();
     if (!text || busy) return;
     if (!q) {
@@ -359,26 +271,8 @@ export default function ChatPane({
       setMessages((m) => [...m, { id: newMessageId(), role: "user", text }]);
       setQuery("");
     }
-    const token = retryToken !== undefined ? retryToken : sessionStorage.getItem("nm-pin-token");
     try {
-      const res = await api.chat(text, false, token);
-      if (res.needs_pin) {
-        pendingQueryRef.current = text;
-        setPinSetup(false);
-        setPinOpen(true);
-        setMessages((m) => [
-          ...m,
-          {
-            id: newMessageId(),
-            role: "assistant",
-            text: res.answer,
-            query: text,
-            needsPin: true,
-            sources: res.sources,
-          },
-        ]);
-        return;
-      }
+      const res = await api.chat(text, false);
       setMessages((m) => [
         ...m,
         {
@@ -403,12 +297,6 @@ export default function ChatPane({
     } finally {
       setBusy(false);
     }
-  }
-
-  async function onPinVerified(token: string) {
-    const q = pendingQueryRef.current;
-    pendingQueryRef.current = null;
-    if (q) await ask(q, token);
   }
 
   return (
@@ -465,12 +353,6 @@ export default function ChatPane({
           <Send />
         </Button>
       </div>
-      <PinDialog
-        open={pinOpen}
-        onOpenChange={setPinOpen}
-        setup={pinSetup}
-        onVerified={onPinVerified}
-      />
       <FeedbackDialog
         open={feedbackMsg !== null}
         onOpenChange={(open) => {

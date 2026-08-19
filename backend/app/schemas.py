@@ -73,7 +73,6 @@ class ChatResponse(BaseModel):
     found: bool
     sources: list[ChatSource]
     structured: Optional[StructuredAnswer] = None
-    needs_pin: bool = False
     show_document: Optional[ShowDocument] = None
 
 

@@ -1,7 +1,6 @@
 import pytest
 
 from app.config import settings
-from app.guardrails import pin
 from app.ingestion.classify import classify
 from app.retrieval.chat import (
     NOT_FOUND_ANSWER,
@@ -389,31 +388,6 @@ class TestSensitiveFacts:
         assert _corroborate("Address: 21 MG Road, Pune", {"address": "21 MG Road, Pune"})["address"]
         assert _corroborate("Address: 21, MG Road, Pune", {"address": "Pune MG Road 21"})["address"]
         assert "address" not in _corroborate("Address: 21 MG Road, Pune", {"address": "42 Fabricated Lane, Mumbai"})
-
-
-class TestPin:
-    def test_set_verify_clear_lifecycle(self):
-        pin.clear_pin()
-        assert not pin.is_set()
-        pin.set_pin("4321")
-        assert pin.is_set()
-        assert pin.verify_pin("4321")
-        assert not pin.verify_pin("0000")
-        pin.set_pin("9999")
-        assert pin.verify_pin("9999")
-        assert not pin.verify_pin("4321")
-        pin.clear_pin()
-        assert not pin.is_set()
-        assert not pin.verify_pin("9999")
-
-    def test_token_roundtrip_and_invalid(self):
-        pin.set_pin("1234")
-        token = pin.issue_token()
-        assert pin.token_valid(token)
-        assert not pin.token_valid("garbage")
-        assert not pin.token_valid(None)
-        pin.clear_pin()
-        assert not pin.token_valid(token)
 
 
 class TestOcrRouting:

@@ -59,7 +59,7 @@ def test_sync_writes_raw_and_fact_docs(monkeypatch):
     assert client.docs[raw_id]["content"] == "grocery\ni have to buy mangoes tomorrow"
 
 
-def test_sync_skips_high_tier(monkeypatch):
+def test_sync_writes_high_tier_like_any_other(monkeypatch):
     client = _enable_memory(monkeypatch)
     with db.get_conn() as conn:
         conn.execute(
@@ -70,8 +70,13 @@ def test_sync_skips_high_tier(monkeypatch):
     memsync.sync_capture(cid)
     with db.get_conn() as conn:
         row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
-    assert row["memory_doc_ids"] is None
-    assert client.docs == {}
+    assert row["memory_doc_ids"] is not None
+    ids = row["memory_doc_ids"].split(",")
+    assert len(ids) == 2
+    kinds = {client.docs[i]["metadata"]["kind"] for i in ids}
+    assert kinds == {"raw", "fact"}
+    raw_id = next(i for i in ids if client.docs[i]["metadata"]["kind"] == "raw")
+    assert client.docs[raw_id]["content"] == "pan card\nPAN ABCDE1234F"
 
 
 def test_sync_forgets_demoted_siblings(monkeypatch):

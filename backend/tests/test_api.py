@@ -35,15 +35,6 @@ def upload_file(client, path, filename=None, document_group_id=None):
     return wait_indexed(client, r.json())
 
 
-def unlock(client, pin="1234"):
-    """Ensure a PIN is set and return a valid unlock token."""
-    if not client.get("/pin/status").json()["set"]:
-        assert client.post("/pin/set", json={"pin": pin}).status_code == 200
-    r = client.post("/pin/verify", json={"pin": pin})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
-
-
 def db_conn():
     from app import db
 
@@ -104,15 +95,13 @@ def test_default_search_excludes_old_versions(client, tmp_path):
 @llm
 def test_delete_capture_removes_it_from_chat(client):
     cap = create_text(client, "electricity bill amount 3500 rupees")
-    token = unlock(client)
-    h = {"X-Pin-Token": token}
-    r = client.post("/chat", json={"query": "electricity bill"}, headers=h)
+    r = client.post("/chat", json={"query": "electricity bill"})
     assert any(s["capture_id"] == cap["id"] for s in r.json()["sources"])
 
     assert client.delete(f"/captures/{cap['id']}").status_code == 204
     assert client.get(f"/captures/{cap['id']}").status_code == 404
 
-    r = client.post("/chat", json={"query": "electricity bill"}, headers=h)
+    r = client.post("/chat", json={"query": "electricity bill"})
     assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
 
 
@@ -138,7 +127,6 @@ def test_semester_courses_answered_completely_and_injection_proof(client):
     body = r.json()
     assert body["found"], body
     assert "122" in body["answer"]
-    assert not body["needs_pin"]
 
     r = client.post("/chat", json={"query": "my 2nd semester courses"})
     assert r.status_code == 200, r.text
@@ -200,25 +188,17 @@ def test_sensitive_facts_answer_behind_pin_gate(client, monkeypatch):
     r = client.post("/chat", json={"query": "what is my address"})
     assert r.status_code == 200
     body = r.json()
-    assert body["needs_pin"] is True, body
-    assert any(s["capture_id"] == cap["id"] for s in body["sources"]), body
-
-    token = unlock(client)
-    r = client.post("/chat", json={"query": "what is my address"}, headers={"X-Pin-Token": token})
-    assert r.status_code == 200
-    body = r.json()
     assert body["found"] is True, body
     assert "21 MG Road, Pune" in body["answer"], body["answer"]
     assert any(s["capture_id"] == cap["id"] for s in body["sources"]), body
+    assert any(s["sensitivity_tier"] == "high" for s in body["sources"]), body
 
 
 @llm
 def test_sensitive_facts_not_answered_without_user_reference(client):
-    token = unlock(client)
     r = client.post(
         "/chat",
         json={"query": "what is the capital of france"},
-        headers={"X-Pin-Token": token},
     )
     assert r.status_code == 200
     assert r.json()["found"] is False
@@ -321,10 +301,9 @@ def test_concept_questions_answered_via_inference(client):
 @llm
 def test_grounded_answer_with_citation(client):
     create_text(client, "My PAN number is ABCDE1234F")
-    token = unlock(client)
     body = None
     for _ in range(3):
-        r = client.post("/chat", json={"query": "What is my PAN number?"}, headers={"X-Pin-Token": token})
+        r = client.post("/chat", json={"query": "What is my PAN number?"})
         assert r.status_code == 200
         body = r.json()
         if body["found"] is True and "ABCDE1234F" in body["answer"]:
@@ -335,26 +314,20 @@ def test_grounded_answer_with_citation(client):
 
 
 @llm
-def test_pin_gates_sensitive_chat_and_audits(client):
+def test_sensitive_query_answers_directly_and_audits(client):
     cap = create_text(client, "My PAN number is ABCDE1234F")
 
-    r = client.post("/chat", json={"query": "What is my PAN number?"})
-    assert r.status_code == 200
-    assert r.json()["needs_pin"] is True
-    assert r.json()["found"] is False
-
-    token = unlock(client)
     body = None
     for _ in range(3):
-        r = client.post("/chat", json={"query": "What is my PAN number?"}, headers={"X-Pin-Token": token})
+        r = client.post("/chat", json={"query": "What is my PAN number?"})
+        assert r.status_code == 200
         body = r.json()
         if body["found"] is True and "ABCDE1234F" in body["answer"]:
             break
-    assert body["needs_pin"] is not True
     assert body["found"] is True
     assert "ABCDE1234F" in body["answer"]
     assert any(s["capture_id"] == cap["id"] for s in body["sources"])
-    assert body["sources"][0]["sensitivity_tier"] == "high"
+    assert any(s["sensitivity_tier"] == "high" for s in body["sources"])
 
     with db_conn() as conn:
         rows = conn.execute(
@@ -366,10 +339,9 @@ def test_pin_gates_sensitive_chat_and_audits(client):
 @llm
 def test_structured_fields_answer(client):
     create_text(client, "My PAN number is ABCDE1234F issued in my name")
-    token = unlock(client)
     body = None
     for _ in range(3):
-        r = client.post("/chat", json={"query": "What is my PAN number?"}, headers={"X-Pin-Token": token})
+        r = client.post("/chat", json={"query": "What is my PAN number?"})
         assert r.status_code == 200
         body = r.json()
         if body["structured"] and body["structured"]["kind"] == "fields":

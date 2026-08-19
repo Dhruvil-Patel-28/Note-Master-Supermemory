@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Lock, LockOpen, ScrollText, Info } from "lucide-react";
-import { toast } from "sonner";
+import { Shield, ScrollText, Info } from "lucide-react";
 import { api, AuditEntry } from "@/lib/api";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -13,19 +11,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -38,144 +23,28 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-function PinSection() {
-  const [set, setSet] = useState<boolean | null>(null);
-  const [newPin, setNewPin] = useState("");
-  const [oldPin, setOldPin] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function refresh() {
-    setSet((await api.pinStatus()).set);
-  }
-
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  async function setPin() {
-    if (newPin.length < 4) return toast.error("PIN must be at least 4 characters");
-    setBusy(true);
-    try {
-      await api.pinSet(newPin);
-      toast.success("PIN set — sensitive documents are now gated");
-      setNewPin("");
-      await refresh();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not set PIN");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changePin() {
-    if (newPin.length < 4) return toast.error("PIN must be at least 4 characters");
-    setBusy(true);
-    try {
-      await api.pinChange(oldPin, newPin);
-      toast.success("PIN changed");
-      setOldPin("");
-      setNewPin("");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not change PIN");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function deletePin() {
-    setBusy(true);
-    try {
-      await api.pinDelete(oldPin);
-      toast.success("PIN removed — sensitive documents are no longer gated");
-      setOldPin("");
-      await refresh();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not remove PIN");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (set === null) return null;
-
+function SensitivitySection() {
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        {set ? (
-          <Badge variant="secondary">
-            <Lock className="mr-1 size-3" /> PIN enabled
-          </Badge>
-        ) : (
-          <Badge variant="outline">
-            <LockOpen className="mr-1 size-3" /> No PIN set
-          </Badge>
-        )}
+      <div className="space-y-2">
+        <p className="font-medium">Sensitivity tiers</p>
+        <p className="text-xs text-muted-foreground">
+          Every capture is classified at ingest as none, moderate, or high (ID/financial
+          documents). Tiers are labels only — nothing is blocked. Sources are badged in chat,
+          and every retrieval that surfaces sensitive content is logged in Activity.
+        </p>
       </div>
-      {!set ? (
-        <div className="space-y-2">
-          <Label htmlFor="pin-new">New PIN</Label>
-          <Input
-            id="pin-new"
-            type="password"
-            value={newPin}
-            onChange={(e) => setNewPin(e.target.value)}
-            placeholder="At least 4 characters"
-          />
-          <Button onClick={setPin} disabled={busy}>
-            Set PIN
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="pin-old">Current PIN</Label>
-            <Input
-              id="pin-old"
-              type="password"
-              value={oldPin}
-              onChange={(e) => setOldPin(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="pin-new">New PIN</Label>
-            <Input
-              id="pin-new"
-              type="password"
-              value={newPin}
-              onChange={(e) => setNewPin(e.target.value)}
-              placeholder="At least 4 characters"
-            />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={changePin} disabled={busy}>
-              Change PIN
-            </Button>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" disabled={busy}>
-                  Remove PIN
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Remove the PIN?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Sensitive documents (Aadhaar, PAN, bank statements) will no longer be gated
-                    at retrieval. This is a local recovery option.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={deletePin}>Remove PIN</AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </div>
-      )}
+      <div className="flex flex-wrap gap-2">
+        <Badge variant="destructive">high — Aadhaar, PAN, bank</Badge>
+        <Badge variant="outline" className="text-yellow-600 dark:text-yellow-400">
+          moderate — meeting, doctor, address
+        </Badge>
+        <Badge variant="outline">none — everything else</Badge>
+      </div>
+      <Separator />
       <p className="text-xs text-muted-foreground">
-        The PIN is a light, local guardrail against casual snooping — it is not account
-        authentication.
+        All data stays on this machine: OCR, ASR, embeddings, and chat run locally via Ollama.
+        No hosted APIs, no API keys, no telemetry.
       </p>
     </div>
   );
@@ -275,12 +144,12 @@ export default function SettingsDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>Security, activity, and app info.</DialogDescription>
+          <DialogDescription>Sensitivity, activity, and app info.</DialogDescription>
         </DialogHeader>
-        <Tabs defaultValue="security">
+        <Tabs defaultValue="sensitivity">
           <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="security">
-              <Lock className="mr-1 size-3.5" /> Security
+            <TabsTrigger value="sensitivity">
+              <Shield className="mr-1 size-3.5" /> Sensitivity
             </TabsTrigger>
             <TabsTrigger value="activity">
               <ScrollText className="mr-1 size-3.5" /> Activity
@@ -289,8 +158,8 @@ export default function SettingsDialog({
               <Info className="mr-1 size-3.5" /> About
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="security" className="pt-3">
-            <PinSection />
+          <TabsContent value="sensitivity" className="pt-3">
+            <SensitivitySection />
           </TabsContent>
           <TabsContent value="activity" className="pt-3">
             <AuditSection />

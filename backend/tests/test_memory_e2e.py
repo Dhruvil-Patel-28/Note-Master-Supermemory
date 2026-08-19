@@ -52,14 +52,11 @@ def _wait_indexed(client, cap, timeout=180.0):
 
 def _wait_searchable(cap, timeout=180.0):
     """Wait until the capture's docs are searchable in supermemory (the memory
-    agent must finish before /v4/search sees the new doc). High-tier captures
-    never sync — nothing to wait for. The query is the capture's own content
-    (search matches text, not customIds); with threshold 0 the doc ranks among
-    the results once done."""
+    agent must finish before /v4/search sees the new doc). The query is the
+    capture's own content (search matches text, not customIds); with threshold
+    0 the doc ranks among the results once done."""
     from app.memory.client import get_client
 
-    if cap["sensitivity_tier"] == "high":
-        return
     capture_id = cap["id"]
     query = (cap["content"] or "")[:80]
     deadline = time.time() + timeout
@@ -109,7 +106,6 @@ def test_semantic_recall_with_citation(client, live_memory):
     assert body["found"], body
     assert "IIIT" in body["answer"]
     assert any(s["capture_id"] == cap["id"] for s in body["sources"])
-    assert not body["needs_pin"]
 
 
 def test_deterministic_transcript_facts_no_pin(client, live_memory):
@@ -124,25 +120,25 @@ def test_deterministic_transcript_facts_no_pin(client, live_memory):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["found"] and "122" in body["answer"]
-    assert not body["needs_pin"]
 
 
-def test_pan_query_gated_and_absent_from_memory(client, live_memory):
+def test_pan_query_answered_from_memory(client, live_memory):
     cap = _create_text(client, "My PAN number is ABCDE1234F")
-    r = client.post("/chat", json={"query": "what is my pan number"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["needs_pin"], body
-    assert "ABCDE1234F" not in body["answer"]
+    body = None
+    for _ in range(3):
+        r = client.post("/chat", json={"query": "what is my pan number"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        if body["found"] and "ABCDE1234F" in body["answer"]:
+            break
+    assert body["found"], body
+    assert "ABCDE1234F" in body["answer"]
+    assert any(s["capture_id"] == cap["id"] for s in body["sources"])
 
-    # The PAN content must never exist in the knowledge store (high-tier
-    # captures never sync): searching for its exact content returns no result
-    # containing it, and the PAN capture's id appears in no result's metadata.
-    # (threshold 0 lists every doc in the container — the transcript/IIIT docs
-    # from earlier tests are expected; the PAN capture is not.)
+    # High-tier captures sync like any other — the PAN content is in the
+    # knowledge store (searching for its exact content hits the capture).
     hits = live_memory.search("ABCDE1234F")
-    assert all("ABCDE1234F" not in h["content"] for h in hits)
-    assert all(str(h["metadata"].get("capture_id")) != str(cap["id"]) for h in hits)
+    assert any(str(h["metadata"].get("capture_id")) == str(cap["id"]) for h in hits)
 
 
 def test_code_question_refused_cleanly(client, live_memory):

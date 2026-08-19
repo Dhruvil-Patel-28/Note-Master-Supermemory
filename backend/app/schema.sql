@@ -38,11 +38,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS chat_feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     query TEXT NOT NULL,

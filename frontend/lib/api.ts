@@ -44,7 +44,6 @@ export interface ChatResponse {
   found: boolean;
   sources: ChatSource[];
   structured?: StructuredAnswer | null;
-  needs_pin?: boolean;
   show_document?: ShowDocument | null;
 }
 
@@ -119,39 +118,11 @@ export const api = {
     }),
   remove: (id: number) => http<void>(`/api/captures/${id}`, { method: "DELETE" }),
   history: (groupId: number) => http<Capture[]>(`/api/captures/history/${groupId}`),
-  chat: (query: string, includeHistory = false, pinToken?: string | null) =>
+  chat: (query: string, includeHistory = false) =>
     http<ChatResponse>("/api/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(pinToken ? { "X-Pin-Token": pinToken } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, include_history: includeHistory }),
-    }),
-  pinStatus: () => http<{ set: boolean }>("/api/pin/status"),
-  pinSet: (pin: string) =>
-    http<{ ok: boolean }>("/api/pin/set", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin }),
-    }),
-  pinVerify: (pin: string) =>
-    http<{ token: string }>("/api/pin/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin }),
-    }),
-  pinChange: (oldPin: string, newPin: string) =>
-    http<{ ok: boolean }>("/api/pin/change", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ old_pin: oldPin, new_pin: newPin }),
-    }),
-  pinDelete: (pin: string) =>
-    http<{ ok: boolean }>("/api/pin", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin }),
     }),
   health: () => http<HealthStatus>("/api/health"),
   audit: (limit = 100) => http<AuditEntry[]>(`/api/audit?limit=${limit}`),
