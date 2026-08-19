@@ -1,3 +1,4 @@
+import json
 import re
 
 from fastapi import APIRouter, Header, HTTPException
@@ -7,7 +8,7 @@ from ..config import settings
 from ..guardrails import pin
 from ..memory.client import get_client
 from ..retrieval.chat import grounded_answer, scrub_injection, transcript_fact_answer
-from ..retrieval.intent import REFUSAL_ANSWER, classify as classify_intent
+from ..retrieval.intent import REFUSAL_ANSWER, _USER_REFERENCE_RE, classify as classify_intent
 from ..schemas import (
     ChatRequest,
     ChatResponse,
@@ -228,6 +229,16 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
 
     hits = _memory_hits(query)
 
+    # Identity-fact queries (address/name/DOB/ID number) re-attach high-tier
+    # cards via their STORED FACTS — the PIN gate fires even when the OCR text
+    # lacks the label word, and the answer afterwards is deterministic.
+    fact_key = _sensitive_fact_key(query)
+    if fact_key:
+        anchors = _sensitive_fact_anchors(fact_key)
+        if anchors:
+            ids = {h["capture_id"] for h in hits}
+            hits = anchors + [h for h in hits if h["capture_id"] not in ids]
+
     tiers = _sensitivity_tiers([h["capture_id"] for h in hits])
     has_high = any(t == "high" for t in tiers.values())
     unlocked = not has_high or (x_pin_token and pin.token_valid(x_pin_token))
@@ -260,6 +271,13 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
         structured = None
     elif det is not None:
         answer, found, structured = det
+    elif fact_key and (fact := _sensitive_fact_value(fact_key)) is not None:
+        # Deterministic, like transcript facts — the LLM never sees the value;
+        # the PIN gate above already verified the unlock.
+        _cid, value = fact
+        answer = f"Your {_FACT_ANSWER_LABELS[fact_key]} is {value}."
+        found = True
+        structured = None
     else:
         try:
             answer, found, structured = grounded_answer(query, hits)
@@ -296,6 +314,106 @@ def chat(payload: ChatRequest, x_pin_token: str | None = Header(default=None)):
         ),
         show_document=show_doc,
     )
+
+
+# Closed vocabulary for identity-fact questions — these are FIELDS of a
+# sensitive doc (extracted once at ingest into captures.sensitive_facts,
+# local-only), not an open noun list. The question must also reference the
+# user (_USER_REFERENCE_RE): "what is the capital" never fires this path.
+# id_number and phone are deliberately NOT here: "what is my PAN number"
+# already gates via the content scan and answers with a structured card
+# through the LLM, and phone is ambiguous on a card that has none (the 3b
+# may map any printed number into it). The deterministic path exists for the
+# fields whose LABELS don't survive OCR (address/name/DOB) — which is exactly
+# when the gate never fires.
+_FACT_QUERY_WORDS = {
+    "address": {
+        "address", "residence", "residential", "live", "living", "stay",
+        "staying", "home", "city", "hometown", "located", "location",
+    },
+    "name": {"name", "fullname"},
+    "date_of_birth": {"dob", "birth", "birthday", "born", "birthdate"},
+}
+_FACT_ANSWER_LABELS = {
+    "name": "name",
+    "address": "address",
+    "date_of_birth": "date of birth",
+}
+
+
+def _sensitive_fact_key(query: str) -> str | None:
+    if not _USER_REFERENCE_RE.search(query):
+        return None
+    words = set(re.findall(r"[a-z]+", query.lower()))
+    for key, vocab in _FACT_QUERY_WORDS.items():
+        if words & vocab:
+            return key
+    return None
+
+
+def _corroborate(content: str, facts: dict[str, str]) -> dict[str, str]:
+    """Keep only fact values the document's own text supports. Exact (alnum)
+    substring wins; otherwise a majority of the value's words (3+ chars) must
+    appear in the text — a rewritten address ("Pune, MG Road" vs "MG Road,
+    Pune") still corroborates, a fabricated one doesn't. The 3b can garble a
+    clean PAN, so nothing uncorroborated is ever answered."""
+    content_norm = re.sub(r"[^a-z0-9]+", "", (content or "").lower())
+    cwords = set(re.findall(r"[a-z0-9]{3,}", (content or "").lower()))
+    out: dict[str, str] = {}
+    for key, value in facts.items():
+        value = (value or "").strip()
+        if not value:
+            continue
+        value_norm = re.sub(r"[^a-z0-9]+", "", value.lower())
+        if value_norm and value_norm in content_norm:
+            out[key] = value
+            continue
+        vwords = re.findall(r"[a-z0-9]{3,}", value.lower())
+        if vwords and 2 * sum(1 for w in vwords if w in cwords) > len(vwords):
+            out[key] = value
+    return out
+
+
+def _sensitive_fact_anchors(key: str) -> list[dict]:
+    """Gate anchors: latest high-tier captures that hold a corroborated value
+    for the fact key. They re-attach the card to the query so the PIN gate
+    fires even when the OCR text lacks the label word ("address" rarely
+    survives)."""
+    anchors: list[dict] = []
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, content, sensitive_facts FROM captures "
+            "WHERE is_latest = 1 AND sensitivity_tier = 'high' AND sensitive_facts IS NOT NULL"
+        ).fetchall()
+    for r in rows:
+        try:
+            facts = json.loads(r["sensitive_facts"] or "{}")
+        except Exception:
+            continue
+        if _corroborate(r["content"], facts).get(key):
+            anchors.append(
+                {"capture_id": r["id"], "snippet": "", "similarity": 1.0}
+            )
+    return anchors
+
+
+def _sensitive_fact_value(key: str) -> tuple[int, str] | None:
+    """Newest high-tier capture holding a corroborated value for the fact key."""
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, content, sensitive_facts FROM captures "
+            "WHERE is_latest = 1 AND sensitivity_tier = 'high' AND sensitive_facts IS NOT NULL "
+            "ORDER BY id DESC"
+        ).fetchall()
+    for r in rows:
+        try:
+            facts = json.loads(r["sensitive_facts"] or "{}")
+        except Exception:
+            continue
+        value = _corroborate(r["content"], facts).get(key)
+        if value:
+            return r["id"], value
+    return None
 
 
 def _sensitivity_tiers(capture_ids: list[int]) -> dict[int, str]:

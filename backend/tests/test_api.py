@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -168,6 +169,59 @@ def test_edit_capture_reindexes_for_chat(client):
 
     r = client.post("/chat", json={"query": "who is Ravi"})
     assert all(s["capture_id"] != cap["id"] for s in r.json()["sources"])
+
+
+@llm
+def test_sensitive_facts_answer_behind_pin_gate(client, monkeypatch):
+    from app.ingestion import sensitive as sensitive_mod
+
+    facts = {
+        "name": "Rahul Sharma",
+        "address": "21 MG Road, Pune",
+        "date_of_birth": "15/08/1996",
+        "id_number": "1234 5678 9012",
+        "phone": "",
+    }
+    monkeypatch.setattr(sensitive_mod, "extract_sensitive_facts", lambda content: dict(facts))
+
+    cap = create_text(
+        client,
+        "Government of India Aadhaar Card Name: Rahul Sharma DOB: 15/08/1996 "
+        "Aadhaar Number: 1234 5678 9012 Address: 21 MG Road, Pune",
+    )
+    assert cap["sensitivity_tier"] == "high", cap
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT sensitive_facts FROM captures WHERE id = ?", (cap["id"],)
+        ).fetchone()
+    stored = json.loads(row["sensitive_facts"])
+    assert stored["address"] == "21 MG Road, Pune", stored
+
+    r = client.post("/chat", json={"query": "what is my address"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["needs_pin"] is True, body
+    assert any(s["capture_id"] == cap["id"] for s in body["sources"]), body
+
+    token = unlock(client)
+    r = client.post("/chat", json={"query": "what is my address"}, headers={"X-Pin-Token": token})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["found"] is True, body
+    assert "21 MG Road, Pune" in body["answer"], body["answer"]
+    assert any(s["capture_id"] == cap["id"] for s in body["sources"]), body
+
+
+@llm
+def test_sensitive_facts_not_answered_without_user_reference(client):
+    token = unlock(client)
+    r = client.post(
+        "/chat",
+        json={"query": "what is the capital of france"},
+        headers={"X-Pin-Token": token},
+    )
+    assert r.status_code == 200
+    assert r.json()["found"] is False
 
 
 def test_note_patch_reclassifies_tier(client):

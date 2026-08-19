@@ -1,8 +1,10 @@
 from pathlib import Path
+import json
 import logging
 
 from .. import db, storage
 from ..memory.sync import sync_capture
+from . import sensitive
 from .asr import transcribe
 from .classify import classify
 from .ocr import extract_doc
@@ -75,8 +77,13 @@ def _extract_and_index(capture_id: int) -> None:
             content = transcribe(Path(storage.resolve_path(row["raw_content_ref"])))
         if not content:
             raise ValueError("no content extracted (empty or failed OCR/ASR)")
+        tier = classify(content, row["original_filename"], row["note"])
+        # High-tier docs get their identity facts extracted once, stored
+        # locally only (never synced) so "what is my address" can be answered
+        # deterministically behind the PIN gate even when OCR mangled labels.
+        facts = sensitive.extract_sensitive_facts(content) if tier == "high" else {}
         conn.execute(
-            "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ? WHERE id = ?",
-            (content, classify(content, row["original_filename"], row["note"]), capture_id),
+            "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ?, sensitive_facts = ? WHERE id = ?",
+            (content, tier, json.dumps(facts), capture_id),
         )
     sync_capture(capture_id)

@@ -324,6 +324,73 @@ class TestFindDocument:
         assert doc is not None and doc.capture_id == cover
 
 
+class TestSensitiveFacts:
+    def test_fact_key_detection(self):
+        from app.routes.chat import _sensitive_fact_key
+
+        assert _sensitive_fact_key("what is my address") == "address"
+        assert _sensitive_fact_key("where do i live") == "address"
+        assert _sensitive_fact_key("what is my name") == "name"
+        assert _sensitive_fact_key("what is my date of birth") == "date_of_birth"
+        assert _sensitive_fact_key("what is my dob") == "date_of_birth"
+        # id_number/phone are deliberately excluded — the content scan + LLM
+        # already answer "what is my PAN number" with a structured card, and a
+        # phone can't be trusted on a card that has none.
+        assert _sensitive_fact_key("what is my aadhaar number") is None
+        assert _sensitive_fact_key("what is my pan number") is None
+        assert _sensitive_fact_key("what is my phone number") is None
+        assert _sensitive_fact_key("what is the capital of france") is None
+        assert _sensitive_fact_key("where is the nearest atm") is None
+
+    def test_fact_value_newest_wins(self, db):
+        from app.routes.chat import _sensitive_fact_value
+
+        for note, address in (("old aadhar", "Old Street"), ("new aadhar", "New Street")):
+            with db() as conn:
+                conn.execute(
+                    "INSERT INTO captures (type, content, sensitivity_tier, sensitive_facts, note, status, is_latest) "
+                    "VALUES ('text', ?, 'high', ?, ?, 'indexed', 1)",
+                    (f"address: {address}", f'{{"address": "{address}"}}', note),
+                )
+        cid, value = _sensitive_fact_value("address")
+        assert value == "New Street"
+        assert _sensitive_fact_value("phone") is None
+
+    def test_fact_value_rejects_uncorroborated_values(self, db):
+        from app.routes.chat import _sensitive_fact_value
+
+        # The newest high capture holds a GARBLED fact (the 3b dropped a
+        # letter) — it must never be answered; the value must appear in the
+        # capture's own text.
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO captures (type, content, sensitivity_tier, sensitive_facts, status, is_latest) "
+                "VALUES ('text', 'address: Old Street', 'high', '{\"address\": \"Garbled Street\"}', 'indexed', 1)",
+            )
+        result = _sensitive_fact_value("address")
+        assert result is None or result[1] != "Garbled Street"
+
+    def test_parse_facts_salvage(self):
+        from app.ingestion.sensitive import _parse_facts
+
+        assert _parse_facts('{"name": "Rahul Sharma", "address": "Pune", "id_number": "XYZPS1234F"}') == {
+            "name": "Rahul Sharma",
+            "address": "Pune",
+            "date_of_birth": "",
+            "id_number": "XYZPS1234F",
+            "phone": "",
+        }
+        assert _parse_facts("sure! here: {\"name\": \"A B\", \"phone\": \"9876543210\"} thanks")["name"] == "A B"
+        assert _parse_facts("garbage") == {k: "" for k in ("name", "address", "date_of_birth", "id_number", "phone")}
+
+    def test_corroborate_accepts_exact_and_rewrite(self):
+        from app.routes.chat import _corroborate
+
+        assert _corroborate("Address: 21 MG Road, Pune", {"address": "21 MG Road, Pune"})["address"]
+        assert _corroborate("Address: 21, MG Road, Pune", {"address": "Pune MG Road 21"})["address"]
+        assert "address" not in _corroborate("Address: 21 MG Road, Pune", {"address": "42 Fabricated Lane, Mumbai"})
+
+
 class TestPin:
     def test_set_verify_clear_lifecycle(self):
         pin.clear_pin()

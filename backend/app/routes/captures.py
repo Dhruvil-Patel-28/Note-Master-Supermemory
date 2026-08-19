@@ -7,7 +7,7 @@ from .. import db, storage
 from ..ingestion.classify import classify
 from ..ingestion.extractors import SUPPORTED_EXTENSIONS
 from ..ingestion.pipeline import create_capture
-from ..ingestion.tasks import schedule_ingest
+from ..ingestion.tasks import schedule_ingest, schedule_sensitive_facts
 from ..schemas import CaptureOut, CaptureUpdateIn, TextCaptureIn
 
 router = APIRouter(prefix="/captures", tags=["captures"])
@@ -129,16 +129,20 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
             if not content:
                 raise HTTPException(status_code=422, detail="content must not be empty")
             conn.execute(
-                "UPDATE captures SET content = ?, note = ?, status = 'queued', error = NULL, sensitivity_tier = ? WHERE id = ?",
+                "UPDATE captures SET content = ?, note = ?, status = 'queued', error = NULL, sensitivity_tier = ?, sensitive_facts = NULL WHERE id = ?",
                 (content, note, tier, capture_id),
             )
         else:
             conn.execute(
-                "UPDATE captures SET note = ?, sensitivity_tier = ? WHERE id = ?",
-                (note, tier, capture_id),
+                "UPDATE captures SET note = ?, sensitivity_tier = ?, sensitive_facts = CASE WHEN ? = 'high' THEN sensitive_facts ELSE NULL END WHERE id = ?",
+                (note, tier, tier, capture_id),
             )
     if content is not None:
         schedule_ingest(background, capture_id)
+    elif tier == "high" and row["sensitivity_tier"] != "high":
+        # The tier rose on labels alone (note like "passport") — extract the
+        # identity facts from the already-extracted content in the background.
+        schedule_sensitive_facts(background, capture_id)
     return _to_out(_get_capture(capture_id))
 
 

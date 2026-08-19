@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS captures (
     error TEXT,
     sensitivity_tier TEXT NOT NULL DEFAULT 'none'
         CHECK (sensitivity_tier IN ('none', 'moderate', 'high')),
+    sensitive_facts TEXT,
     document_group_id INTEGER,
     version_number INTEGER NOT NULL DEFAULT 1,
     is_latest INTEGER NOT NULL DEFAULT 1,
