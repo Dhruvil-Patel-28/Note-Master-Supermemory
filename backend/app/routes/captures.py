@@ -63,10 +63,11 @@ def create_file_capture(
             status_code=422,
             detail=f"unsupported file type {ext!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}",
         )
-    data = file.file.read()
+    data = file.file.read(1)
     if not data:
         raise HTTPException(status_code=422, detail="empty file")
-    rel = storage.save_upload(file.filename, data)
+    file.file.seek(0)
+    rel = storage.save_upload(file.filename, file.file)
     capture_id = create_capture(
         "doc",
         raw_content_ref=rel,
@@ -89,10 +90,11 @@ def create_audio_capture(background: BackgroundTasks, file: UploadFile = File(..
             status_code=422,
             detail=f"unsupported audio type {ext!r}; supported: {sorted(AUDIO_EXTENSIONS)}",
         )
-    data = file.file.read()
+    data = file.file.read(1)
     if not data:
         raise HTTPException(status_code=422, detail="empty file")
-    rel = storage.save_upload(file.filename, data)
+    file.file.seek(0)
+    rel = storage.save_upload(file.filename, file.file)
     capture_id = create_capture("voice", raw_content_ref=rel, original_filename=file.filename)
     schedule_ingest(background, capture_id)
     return _to_out(_get_capture(capture_id))

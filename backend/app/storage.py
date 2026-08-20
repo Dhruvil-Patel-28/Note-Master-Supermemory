@@ -5,11 +5,18 @@ from pathlib import Path
 from .config import settings
 
 
-def save_upload(filename: str, data: bytes) -> str:
+def save_upload(filename: str, src) -> str:
+    """Stream an upload (bytes or file-like) to disk in chunks — big docs
+    must never be read into RAM whole (a 100MB upload would OOM)."""
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     ext = Path(filename).suffix.lower()
     rel = f"{uuid.uuid4().hex}{ext}"
-    (settings.uploads_dir / rel).write_bytes(data)
+    target = settings.uploads_dir / rel
+    with open(target, "wb") as out:
+        if isinstance(src, bytes):
+            out.write(src)
+        else:
+            shutil.copyfileobj(src, out)
     return rel
 
 
