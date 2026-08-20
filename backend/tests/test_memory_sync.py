@@ -14,9 +14,14 @@ class FakeClient:
         self.docs = {}
         self.deleted = []
 
-    def add_document(self, content, container_tag=None, metadata=None, custom_id=None):
+    def add_document(self, content, container_tag=None, metadata=None, custom_id=None, entity_context=None):
         doc_id = f"doc-{len(self.docs) + 1}"
-        self.docs[doc_id] = {"content": content, "metadata": metadata or {}, "custom_id": custom_id}
+        self.docs[doc_id] = {
+            "content": content,
+            "metadata": metadata or {},
+            "custom_id": custom_id,
+            "entity_context": entity_context,
+        }
         return doc_id
 
     def delete_document(self, doc_id):
@@ -57,6 +62,7 @@ def test_sync_writes_raw_and_fact_docs(monkeypatch):
     raw_id = next(i for i in ids if client.docs[i]["metadata"]["kind"] == "raw")
     assert client.docs[raw_id]["custom_id"] == f"nm-{cid}-raw"
     assert client.docs[raw_id]["content"] == "grocery\ni have to buy mangoes tomorrow"
+    assert client.docs[raw_id]["entity_context"] == "The user needs to buy mangoes tomorrow."
 
 
 def test_sync_writes_high_tier_like_any_other(monkeypatch):

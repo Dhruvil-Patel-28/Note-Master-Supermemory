@@ -1,10 +1,12 @@
 from pathlib import Path
-import json
 import logging
 
 from .. import db, storage
 from ..memory.sync import sync_capture
-from . import sensitive
+# SENSITIVE-FACTS (OPT2): dormant — uncomment to restore the 3b identity-fact
+# extraction at ingest (schedule + tasks.py + routes/chat.py must be revived
+# together). Identity is now handled entirely by supermemory retrieval.
+# from . import sensitive
 from .asr import transcribe
 from .classify import classify
 from .ocr import extract_doc
@@ -78,12 +80,12 @@ def _extract_and_index(capture_id: int) -> None:
         if not content:
             raise ValueError("no content extracted (empty or failed OCR/ASR)")
         tier = classify(content, row["original_filename"], row["note"])
-        # High-tier docs get their identity facts extracted once, stored
-        # locally only (never synced) so "what is my address" can be answered
-        # deterministically behind the PIN gate even when OCR mangled labels.
-        facts = sensitive.extract_sensitive_facts(content) if tier == "high" else {}
+        # SENSITIVE-FACTS (OPT2): dormant — identity facts were extracted here
+        # once per high-tier doc (never synced, deterministic answers). Now
+        # supermemory retrieval handles identity; the column is left NULL.
+        # facts = sensitive.extract_sensitive_facts(content) if tier == "high" else {}
         conn.execute(
-            "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ?, sensitive_facts = ? WHERE id = ?",
-            (content, tier, json.dumps(facts), capture_id),
+            "UPDATE captures SET content = ?, status = 'indexed', error = NULL, sensitivity_tier = ?, sensitive_facts = NULL WHERE id = ?",
+            (content, tier, capture_id),
         )
     sync_capture(capture_id)

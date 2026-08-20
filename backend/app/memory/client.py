@@ -54,6 +54,7 @@ class MemoryClient:
         container_tag: str | None = None,
         metadata: dict | None = None,
         custom_id: str | None = None,
+        entity_context: str | None = None,
     ) -> str | None:
         payload: dict = {"content": content}
         if container_tag:
@@ -62,6 +63,8 @@ class MemoryClient:
             payload["metadata"] = metadata
         if custom_id:
             payload["customId"] = custom_id
+        if entity_context:
+            payload["entityContext"] = entity_context
         data = self._post("/v3/documents", payload)
         return data.get("id") if data else None
 
@@ -76,7 +79,7 @@ class MemoryClient:
         self,
         query: str,
         container_tag: str | None = None,
-        search_mode: str = "documents",
+        search_mode: str = "hybrid",
         limit: int = 10,
         threshold: float = 0.0,
     ) -> list[dict]:

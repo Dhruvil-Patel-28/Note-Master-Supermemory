@@ -160,30 +160,13 @@ def test_edit_capture_reindexes_for_chat(client):
 
 
 @llm
-def test_sensitive_facts_answer_behind_pin_gate(client, monkeypatch):
-    from app.ingestion import sensitive as sensitive_mod
-
-    facts = {
-        "name": "Rahul Sharma",
-        "address": "21 MG Road, Pune",
-        "date_of_birth": "15/08/1996",
-        "id_number": "1234 5678 9012",
-        "phone": "",
-    }
-    monkeypatch.setattr(sensitive_mod, "extract_sensitive_facts", lambda content: dict(facts))
-
+def test_address_answered_with_high_tier_source(client):
     cap = create_text(
         client,
         "Government of India Aadhaar Card Name: Rahul Sharma DOB: 15/08/1996 "
         "Aadhaar Number: 1234 5678 9012 Address: 21 MG Road, Pune",
     )
     assert cap["sensitivity_tier"] == "high", cap
-    with db_conn() as conn:
-        row = conn.execute(
-            "SELECT sensitive_facts FROM captures WHERE id = ?", (cap["id"],)
-        ).fetchone()
-    stored = json.loads(row["sensitive_facts"])
-    assert stored["address"] == "21 MG Road, Pune", stored
 
     r = client.post("/chat", json={"query": "what is my address"})
     assert r.status_code == 200

@@ -7,7 +7,7 @@ from .. import db, storage
 from ..ingestion.classify import classify
 from ..ingestion.extractors import SUPPORTED_EXTENSIONS
 from ..ingestion.pipeline import create_capture
-from ..ingestion.tasks import schedule_ingest, schedule_sensitive_facts
+from ..ingestion.tasks import schedule_ingest  # , schedule_sensitive_facts (OPT2: dormant)
 from ..schemas import CaptureOut, CaptureUpdateIn, TextCaptureIn
 
 router = APIRouter(prefix="/captures", tags=["captures"])
@@ -139,10 +139,10 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
             )
     if content is not None:
         schedule_ingest(background, capture_id)
-    elif tier == "high" and row["sensitivity_tier"] != "high":
-        # The tier rose on labels alone (note like "passport") — extract the
-        # identity facts from the already-extracted content in the background.
-        schedule_sensitive_facts(background, capture_id)
+    # SENSITIVE-FACTS (OPT2): dormant — re-tiering to high used to schedule the
+    # identity-fact extraction here; supermemory retrieval handles it now.
+    # elif tier == "high" and row["sensitivity_tier"] != "high":
+    #     schedule_sensitive_facts(background, capture_id)
     return _to_out(_get_capture(capture_id))
 
 

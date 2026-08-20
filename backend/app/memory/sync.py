@@ -83,6 +83,8 @@ def sync_capture(capture_id: int) -> None:
       - docs carry deterministic customIds (nm-{capture_id}-{slot}) so edits
         upsert in place instead of racing deletes against the ingester
         (DELETE during processing returns 409)
+      - entityContext guides the agent's memory extraction so the graph's
+        nodes reflect the capture's real facts instead of chunk-like noise
       - all best-effort: supermemory down = capture still indexes
     """
     if not settings.memory_enabled:
@@ -113,19 +115,27 @@ def sync_capture(capture_id: int) -> None:
             }
             docs: list[str] = []
 
+            fact_kind = _fact_kind(row["type"], row["content"])
+            facts = facts_for_capture(row["type"], row["content"])
+
             raw = _memory_text(row)
             if raw:
+                # entityContext guides the agent's memory extraction for this
+                # doc — the deterministic facts are the best hint available
+                # ("The user has a CGPA of 7.57..."), so the graph's nodes
+                # reflect real facts instead of chunk-like noise.
+                hint = " ".join(facts)[:1500] if facts else None
                 doc_id = client.add_document(
                     raw,
                     tag,
                     {**base_meta, "kind": "raw"},
                     custom_id=_custom_id(capture_id, "raw"),
+                    entity_context=hint,
                 )
                 if doc_id:
                     docs.append(doc_id)
 
-            fact_kind = _fact_kind(row["type"], row["content"])
-            for i, fact in enumerate(facts_for_capture(row["type"], row["content"])):
+            for i, fact in enumerate(facts):
                 doc_id = client.add_document(
                     fact,
                     tag,
