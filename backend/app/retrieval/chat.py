@@ -296,9 +296,11 @@ def _normalize(text: str) -> str:
 
 
 def _filter_fields(fields: list[dict], context: str) -> list[dict]:
-    """Dedupe fields and drop any whose key doesn't appear in the retrieved
+    """Dedupe fields, drop any whose key doesn't appear in the retrieved
     context — the small model invents list items (courses it never took) when
-    asked to enumerate, and the key is the most checkable part."""
+    asked to enumerate, and the key is the most checkable part — and drop
+    key==value repeats: for definitional questions the model mirrors the
+    fields shape and emits the concept as both key and value."""
     ctx = _normalize(context)
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -308,6 +310,9 @@ def _filter_fields(fields: list[dict], context: str) -> list[dict]:
         if not key or (key, value) in seen:
             continue
         seen.add((key, value))
+        value_norm = _normalize(value)
+        if value_norm == key or value_norm.startswith(key + " "):
+            continue
         if key in ctx:
             out.append({"key": f["key"], "value": value})
     return out
@@ -428,7 +433,11 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         )
         answer, found, structured = _parse_response(response["message"]["content"])
         if found and structured and structured["fields"]:
-            structured["fields"] = _filter_fields(structured["fields"], context)
+            filtered = _filter_fields(structured["fields"], context)
+            if filtered:
+                structured["fields"] = filtered
+            else:
+                structured = {"kind": "prose", "fields": []}
         return answer, found, structured
 
     answer, found, structured = ask()

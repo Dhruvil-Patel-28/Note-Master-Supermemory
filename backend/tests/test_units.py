@@ -81,6 +81,19 @@ class TestChatParse:
         out = _filter_fields(fields, "CSL\t102 DATA STRUCTURES")
         assert [f["key"] for f in out] == ["CSL 102"]
 
+    def test_filter_fields_drops_key_value_repeats(self):
+        from app.retrieval.chat import _filter_fields
+
+        fields = [
+            {"key": "severe class imbalance", "value": "severe class imbalance"},
+            {"key": "evolving fraud patterns", "value": "evolving fraud patterns"},
+            {"key": "high operational and reputational costs",
+             "value": "high operational and reputational costs of false positives and false negatives"},
+        ]
+        out = _filter_fields(fields, "severe class imbalance evolving fraud patterns "
+                                    "high operational and reputational costs of false positives and false negatives")
+        assert [f["key"] for f in out] == []
+
     def test_scrub_injection_strips_jailbreak_phrasing(self):
         from app.retrieval.chat import scrub_injection
 
