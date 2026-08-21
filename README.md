@@ -4,7 +4,7 @@
 
 Dump text notes, voice memos, and documents into a chat-style composer, then ask anything in natural language and get a structured, cited answer pulled from your own data. Sensitive documents (Aadhaar, PAN, bank statements) are stored and answerable like everything else, badged in chat and audit-logged.
 
-Everything runs on your machine — local Ollama models for chat/OCR/ASR/embeddings, a local supermemory-server for semantic retrieval, SQLite for app state. **One deliberate exception:** the knowledge layer's memory agent (which reads each document and builds the graph) runs on Groq's free tier by default, so document text reaches Groq during ingestion only. Queries never leave the machine. Set `SUPERMEMORY_PROVIDER=ollama` for a fully offline stack.
+Everything runs on your machine — local Ollama models for chat/OCR/ASR/embeddings, a local supermemory-server for semantic retrieval, SQLite for app state. **One deliberate exception:** the knowledge layer's memory agent (which reads each document and builds the graph) runs on Google Gemini's free tier by default, so document text reaches Google during ingestion only. Queries never leave the machine. Set `SUPERMEMORY_PROVIDER=ollama` for a fully offline stack.
 
 ## Features
 
@@ -35,7 +35,7 @@ Everything runs on your machine — local Ollama models for chat/OCR/ASR/embeddi
               └───────────────┘                             └──────────┬───────────┘
                       ▼                                                │
               Ollama (localhost:11434)                    memory agent LLM (switchable):
-              · llama3.2:3b — chat + intent               · groq llama-3.3-70b (default,
+              · llama3.2:3b — chat + intent               · gemini-3.5-flash-lite (default,
               · nomic-embed-text — embeddings               free tier; ingestion only)
               · qwen2.5vl:3b — image OCR                   · or local hermes3 (offline)
 ```
@@ -50,7 +50,8 @@ Every capture — all sensitivity tiers — mirrors into supermemory as exactly 
 | Backend | FastAPI, SQLite (stdlib, no ORM) |
 | PDF extraction | Docling (local, markdown tables) |
 | Knowledge & retrieval | supermemory-server + Ollama `nomic-embed-text` |
-| Memory agent | Groq `llama-3.3-70b-versatile` (free tier) or local `hermes3` |
+| Memory agent | Google `gemini-3.5-flash-lite` (free tier) or local `hermes3` |
+| Graph glue | `scripts/gemini-proxy.py` — re-injects Gemini thought signatures the server's SDK drops |
 | Chat / intent | Ollama `llama3.2:3b` (schema-constrained JSON) |
 | OCR | Ollama `qwen2.5vl:3b` (images) |
 | ASR | faster-whisper (`base`, CPU) |
@@ -61,7 +62,7 @@ Every capture — all sensitivity tiers — mirrors into supermemory as exactly 
 - Python 3.14+ and [uv](https://docs.astral.sh/uv/)
 - Node.js 20+
 - [Ollama](https://ollama.com) running on `localhost:11434`
-- A free [Groq API key](https://console.groq.com/keys) (optional — omit for fully-local)
+- A free [Google AI Studio API key](https://aistudio.google.com/apikey) (optional — omit for fully-local)
 
 ## Quickstart
 
@@ -71,8 +72,8 @@ ollama pull llama3.2:3b
 ollama pull nomic-embed-text
 ollama pull qwen2.5vl:3b        # image OCR only
 
-# 2. Configure the Groq key (optional but default provider)
-export GROQ_API_KEY=gsk_...     # or write it to ~/.supermemory/groq-key
+# 2. Configure the Gemini key (optional but default provider)
+export GOOGLE_API_KEY=AIza...   # or write it to ~/.supermemory/gemini-key
 
 # 3. Start the knowledge layer (must be launched via this script)
 ./scripts/run-supermemory.sh    # SUPERMEMORY_PROVIDER=ollama for fully-local
@@ -96,9 +97,9 @@ Env-driven, read at import time (`backend/app/config.py`) plus the launcher scri
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SUPERMEMORY_PROVIDER` | `groq` | Memory-agent LLM: `groq` (cloud, ingestion-only) or `ollama` (fully local) |
-| `GROQ_API_KEY` / `~/.supermemory/groq-key` | — | Groq key; missing key falls back to ollama with a warning |
-| `SUPERMEMORY_AGENT_MODEL` | `llama-3.3-70b-versatile` | Groq model override (must support tool calling) |
+| `SUPERMEMORY_PROVIDER` | `gemini` | Memory-agent LLM: `gemini` (cloud, ingestion-only), `groq` (paid dev tier only), or `ollama` (fully local) |
+| `GOOGLE_API_KEY` / `~/.supermemory/gemini-key` | — | Google AI Studio key; missing key falls back to ollama with a warning |
+| `SUPERMEMORY_AGENT_MODEL` | `gemini-3.5-flash-lite` | Cloud model override (must support tool calling) |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Chat/intent model |
 | `DOCLING_ENABLED` | `1` | Docling PDF→markdown extraction (auto-falls back to pypdf/VLM OCR when off or failing) |
 | `OCR_ENABLED` | `1` | Vision OCR for image uploads |
@@ -107,9 +108,9 @@ Env-driven, read at import time (`backend/app/config.py`) plus the launcher scri
 | `MEMORY_CONTAINER_TAG` | `user_main` | supermemory container holding app docs |
 | `NOTE_MASTER_DATA_DIR` | `backend/data` | SQLite + uploads location (gitignored) |
 
-### Free-tier notes (Groq)
+### Free-tier notes (Gemini)
 
-`llama-3.3-70b-versatile`: 30 req/min, 1K req/day, **100K tokens/day**. Single-user ingestion fits easily; a bulk re-sync of many large docs may need more than one day — `backend/scripts/resync_memory.py --delay 5` is throttled and idempotent, so just re-run it tomorrow. Quota exhaustion shows up as docs stuck `indexing`; wait for the midnight UTC reset or flip `SUPERMEMORY_PROVIDER=ollama`.
+Default `gemini-3.5-flash-lite`: ~15 req/min, ~1K req/day, ~250K tokens/min. Two things make Gemini work where Groq's free tier cannot: per-minute token headroom (the agent sends a fixed ~13.8K-token prompt per call, over Groq's 8K TPM cap on every free model), and per-model daily buckets — the newest flagships get starved limits for new keys (`gemini-3.6-flash` = only 20 req/day), while Flash-Lite carries ~1K/day. A bulk re-sync may still span days; `backend/scripts/resync_memory.py --delay 5` is throttled and idempotent, so re-run as needed. Quota exhaustion shows up as docs stuck `indexing`; flip `SUPERMEMORY_PROVIDER=ollama` to keep working offline.
 
 ## Maintenance
 
