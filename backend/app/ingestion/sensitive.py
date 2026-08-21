@@ -3,9 +3,12 @@ ingest from the extracted text with the local 3b model, stored locally in
 `captures.sensitive_facts` (never mirrored to supermemory, by design: the
 knowledge layer must not hold PAN/Aadhaar-adjacent data).
 
+DORMANT (OPT2): nothing imports this module since identity moved to
+supermemory retrieval. Revive together with the SENSITIVE-FACTS blocks in
+tasks.py and routes/chat.py.
+
 The extraction is best-effort: any failure yields an empty dict (ingestion
-never fails because of it), and the chat route answers these facts
-deterministically behind the PIN gate — the same pattern as transcript facts.
+never fails because of it).
 """
 
 import json
@@ -13,7 +16,7 @@ import logging
 import re
 
 from ..config import settings
-from ..retrieval.chat import _client, _extract_json
+from ..retrieval.chat import _client
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +41,15 @@ _SYSTEM = (
 
 def _parse_facts(raw: str) -> dict[str, str]:
     try:
-        payload = json.loads(_extract_json(raw) or "{}")
+        payload = json.loads(raw)
     except Exception:
-        return {}
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except Exception:
+            return {}
     if not isinstance(payload, dict):
         return {}
     facts: dict[str, str] = {key: "" for key in FACT_KEYS}

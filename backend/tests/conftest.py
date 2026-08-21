@@ -5,6 +5,10 @@ import pytest
 
 os.environ.setdefault("NOTE_MASTER_DATA_DIR", tempfile.mkdtemp(prefix="note_master_test_"))
 os.environ.setdefault("OCR_ENABLED", "0")
+# Docling loads layout models (~1GB) on first convert — far too heavy for the
+# hermetic suite. Tests that exercise Docling enable it explicitly via
+# object.__setattr__ on settings.
+os.environ.setdefault("DOCLING_ENABLED", "0")
 # The hermetic suite disables memory; the @memory run overrides this to "1"
 # via scripts/run-memory-tests.sh. All test-process writes go to a dedicated
 # container so the user's real data (user_main) is never touched.

@@ -4,12 +4,12 @@
 
 Dump text notes, voice memos, and documents into a chat-style composer, then ask anything in natural language and get a structured, cited answer pulled from your own data. Sensitive documents (Aadhaar, PAN, bank statements) are stored and answerable like everything else, badged in chat and audit-logged.
 
-Everything runs on your machine: local Ollama models, a local supermemory-server for semantic retrieval, and SQLite for app state. No hosted APIs, no telemetry, nothing leaves your computer.
+Everything runs on your machine — local Ollama models for chat/OCR/ASR/embeddings, a local supermemory-server for semantic retrieval, SQLite for app state. **One deliberate exception:** the knowledge layer's memory agent (which reads each document and builds the graph) runs on Groq's free tier by default, so document text reaches Groq during ingestion only. Queries never leave the machine. Set `SUPERMEMORY_PROVIDER=ollama` for a fully offline stack.
 
 ## Features
 
-- **Capture** — text notes, voice memos (local ASR transcription, original audio retained), and documents (PDFs, images, Word, Excel; vision OCR for scanned/photographed docs)
-- **Grounded chat** — answers come only from your captured content, with citations, structured field-card answers, an honest not-found path, and typo tolerance
+- **Capture** — text notes, voice memos (local ASR transcription, original audio retained), and documents (PDFs via Docling → markdown with real tables, images via vision OCR, Word, Excel)
+- **Grounded chat** — answers come only from your captured content, schema-constrained JSON output, citations, structured field-card answers, an honest not-found path, and typo tolerance
 - **Document access** — "show me my resume" opens the original uploaded file in a preview, never an extracted-text dump
 - **Guardrails** — sensitivity tiers (`none`/`moderate`/`high`) assigned at ingestion, surfaced as labels: sensitive sources are badged in chat and every sensitive retrieval is audit-logged (informational — nothing is blocked); prompt-injection resistant
 - **Versioning** — re-uploading a document creates a new version (old ones retained, restorable); editable labels without re-extraction
@@ -30,16 +30,17 @@ Everything runs on your machine: local Ollama models, a local supermemory-server
               ┌───────────────┐                             ┌──────────────────────┐
               │ SQLite        │                             │ supermemory-server   │
               │ app state     │                             │ (localhost:6767)     │
-              │ tiers/audit   │                             │ raw + fact docs      │
-              │ memory ids    │                             │ embeddings + search  │
-              └───────────────┘                             └──────────────────────┘
-                      ▲                                                ▲
-              Ollama (localhost:11434)                    files on disk (uploads/audio)
-              · llama3.2:3b — chat + facts
-              · qwen2.5vl:3b — OCR (opt-in)
+              │ tiers/audit   │                             │ raw-content docs     │
+              │ memory ids    │                             │ embeddings + graph   │
+              └───────────────┘                             └──────────┬───────────┘
+                      ▼                                                │
+              Ollama (localhost:11434)                    memory agent LLM (switchable):
+              · llama3.2:3b — chat + intent               · groq llama-3.3-70b (default,
+              · nomic-embed-text — embeddings               free tier; ingestion only)
+              · qwen2.5vl:3b — image OCR                   · or local hermes3 (offline)
 ```
 
-Three runtimes, all localhost. Every capture — all sensitivity tiers — mirrors into supermemory as a raw-content doc plus deterministic fact docs; chat retrieves over it semantically with a similarity floor. Tiers are labels, not barriers: sensitive docs sync, answer, and are audit-logged like any other.
+Every capture — all sensitivity tiers — mirrors into supermemory as exactly one raw-content doc (`nm-{capture_id}-raw`). The server's memory agent extracts the graph memories; there is no per-document-type parsing anywhere in this repo. Chat retrieves over hybrid search (chunks + graph nodes) with a similarity floor. Tiers are labels, not barriers: sensitive docs sync, answer, and are audit-logged like any other.
 
 ## Tech stack
 
@@ -47,9 +48,11 @@ Three runtimes, all localhost. Every capture — all sensitivity tiers — mirro
 |---|---|
 | Frontend | Next.js 16 (App Router), shadcn/ui |
 | Backend | FastAPI, SQLite (stdlib, no ORM) |
+| PDF extraction | Docling (local, markdown tables) |
 | Knowledge & retrieval | supermemory-server + Ollama `nomic-embed-text` |
-| Chat / facts / intent | Ollama `llama3.2:3b` |
-| OCR | Ollama `qwen2.5vl:3b` (opt-in) |
+| Memory agent | Groq `llama-3.3-70b-versatile` (free tier) or local `hermes3` |
+| Chat / intent | Ollama `llama3.2:3b` (schema-constrained JSON) |
+| OCR | Ollama `qwen2.5vl:3b` (images) |
 | ASR | faster-whisper (`base`, CPU) |
 
 ## Requirements
@@ -58,6 +61,7 @@ Three runtimes, all localhost. Every capture — all sensitivity tiers — mirro
 - Python 3.14+ and [uv](https://docs.astral.sh/uv/)
 - Node.js 20+
 - [Ollama](https://ollama.com) running on `localhost:11434`
+- A free [Groq API key](https://console.groq.com/keys) (optional — omit for fully-local)
 
 ## Quickstart
 
@@ -65,50 +69,71 @@ Three runtimes, all localhost. Every capture — all sensitivity tiers — mirro
 # 1. Pull the models (once)
 ollama pull llama3.2:3b
 ollama pull nomic-embed-text
-ollama pull qwen2.5vl:3b        # OCR only
+ollama pull qwen2.5vl:3b        # image OCR only
 
-# 2. Start the knowledge layer (must be launched via this script)
-./scripts/run-supermemory.sh
+# 2. Configure the Groq key (optional but default provider)
+export GROQ_API_KEY=gsk_...     # or write it to ~/.supermemory/groq-key
 
-# 3. Backend (from backend/ — always `uv run`)
+# 3. Start the knowledge layer (must be launched via this script)
+./scripts/run-supermemory.sh    # SUPERMEMORY_PROVIDER=ollama for fully-local
+
+# 4. Backend (from backend/ — always `uv run`)
 uv sync
 uv run uvicorn app.main:app --reload
 
-# 4. Frontend (from frontend/)
+# 5. Frontend (from frontend/)
 npm install
 npm run dev
 ```
 
 Open **http://localhost:3000**, dump a note or upload a document, then ask the chat pane about it.
 
-> The first voice note takes ~2–20s cold: faster-whisper downloads the `base` model on first use, then stays loaded.
+> First-run costs: faster-whisper downloads its model on the first voice note (~2–20s); Docling downloads ~1GB of layout models and takes ~60s on the first PDF, then seconds per document.
 
 ## Configuration
 
-Env-driven, read at import time (`backend/app/config.py`). Key variables:
+Env-driven, read at import time (`backend/app/config.py`) plus the launcher script. Key variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OLLAMA_MODEL` | `llama3.2:3b` | Chat/answers model |
-| `OLLAMA_EXTRACT_MODEL` | `llama3.2:3b` | Note-facts model |
-| `OCR_ENABLED` | `1` | Vision OCR for scanned/photographed docs (image uploads and image-only PDFs); set `0` to disable (then they fail ingestion by design) |
+| `SUPERMEMORY_PROVIDER` | `groq` | Memory-agent LLM: `groq` (cloud, ingestion-only) or `ollama` (fully local) |
+| `GROQ_API_KEY` / `~/.supermemory/groq-key` | — | Groq key; missing key falls back to ollama with a warning |
+| `SUPERMEMORY_AGENT_MODEL` | `llama-3.3-70b-versatile` | Groq model override (must support tool calling) |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Chat/intent model |
+| `DOCLING_ENABLED` | `1` | Docling PDF→markdown extraction (auto-falls back to pypdf/VLM OCR when off or failing) |
+| `OCR_ENABLED` | `1` | Vision OCR for image uploads |
 | `MEMORY_ENABLED` | `1` | Disable → chat answers nothing (honest not-found) |
 | `MEMORY_URL` | `http://127.0.0.1:6767` | supermemory-server base URL |
 | `MEMORY_CONTAINER_TAG` | `user_main` | supermemory container holding app docs |
 | `NOTE_MASTER_DATA_DIR` | `backend/data` | SQLite + uploads location (gitignored) |
+
+### Free-tier notes (Groq)
+
+`llama-3.3-70b-versatile`: 30 req/min, 1K req/day, **100K tokens/day**. Single-user ingestion fits easily; a bulk re-sync of many large docs may need more than one day — `backend/scripts/resync_memory.py --delay 5` is throttled and idempotent, so just re-run it tomorrow. Quota exhaustion shows up as docs stuck `indexing`; wait for the midnight UTC reset or flip `SUPERMEMORY_PROVIDER=ollama`.
+
+## Maintenance
+
+From `backend/scripts/`:
+
+```bash
+uv run python scripts/resync_memory.py            # re-run agent extraction over all captures
+uv run python scripts/purge_orphans.py            # list docs whose captures were deleted locally
+uv run python scripts/purge_orphans.py --delete   #   …remove them (--all = empty-store reset)
+uv run python scripts/clean_memories.py           # sweep duplicate/cross-attached graph memories
+```
 
 ## Testing
 
 From `backend/`:
 
 ```bash
-uv run pytest tests                  # full suite: 95 tests (real Ollama + whisper)
-uv run pytest tests -m "not llm"     # pure logic: 72 tests, no Ollama needed
-bash ../scripts/run-memory-tests.sh  # live e2e battery vs supermemory-server (5 tests)
+uv run pytest tests                  # full suite (real Ollama + whisper + one real Docling convert)
+uv run pytest tests -m "not llm"     # pure logic, no Ollama needed
+bash ../scripts/run-memory-tests.sh  # live e2e battery vs supermemory-server
 ```
 
 ## Documentation
 
 - `PLAN.md` — scope, decisions, and roadmap (source of truth)
 - `AGENTS.md` — implementation constraints and non-obvious facts for contributors
-- `HANDOFF.md` — v2 phase-by-phase handoff notes
+- `HANDOFF.md` — phase-by-phase handoff notes

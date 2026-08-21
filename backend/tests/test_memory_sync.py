@@ -14,13 +14,12 @@ class FakeClient:
         self.docs = {}
         self.deleted = []
 
-    def add_document(self, content, container_tag=None, metadata=None, custom_id=None, entity_context=None):
+    def add_document(self, content, container_tag=None, metadata=None, custom_id=None):
         doc_id = f"doc-{len(self.docs) + 1}"
         self.docs[doc_id] = {
             "content": content,
             "metadata": metadata or {},
             "custom_id": custom_id,
-            "entity_context": entity_context,
         }
         return doc_id
 
@@ -37,13 +36,12 @@ def _enable_memory(monkeypatch):
     monkeypatch.setattr(
         memsync, "settings", SimpleNamespace(memory_enabled=True, memory_container_tag="user_main")
     )
-    monkeypatch.setattr(memsync, "facts_for_capture", lambda type_, content: ["The user needs to buy mangoes tomorrow."])
     client = FakeClient()
     monkeypatch.setattr(memsync, "get_client", lambda: client)
     return client
 
 
-def test_sync_writes_raw_and_fact_docs(monkeypatch):
+def test_sync_writes_single_raw_doc(monkeypatch):
     client = _enable_memory(monkeypatch)
     with db.get_conn() as conn:
         conn.execute(
@@ -56,13 +54,12 @@ def test_sync_writes_raw_and_fact_docs(monkeypatch):
         row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
     assert row["memory_doc_ids"]
     ids = row["memory_doc_ids"].split(",")
-    assert len(ids) == 2
-    kinds = {client.docs[i]["metadata"]["kind"] for i in ids}
-    assert kinds == {"raw", "fact"}
-    raw_id = next(i for i in ids if client.docs[i]["metadata"]["kind"] == "raw")
-    assert client.docs[raw_id]["custom_id"] == f"nm-{cid}-raw"
-    assert client.docs[raw_id]["content"] == "grocery\ni have to buy mangoes tomorrow"
-    assert client.docs[raw_id]["entity_context"] == "The user needs to buy mangoes tomorrow."
+    # Raw-only sync: one doc per capture, no fact docs.
+    assert len(ids) == 1
+    raw = client.docs[ids[0]]
+    assert raw["custom_id"] == f"nm-{cid}-raw"
+    assert raw["metadata"]["kind"] == "raw"
+    assert raw["content"] == "grocery\ni have to buy mangoes tomorrow"
 
 
 def test_sync_writes_high_tier_like_any_other(monkeypatch):
@@ -78,11 +75,8 @@ def test_sync_writes_high_tier_like_any_other(monkeypatch):
         row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
     assert row["memory_doc_ids"] is not None
     ids = row["memory_doc_ids"].split(",")
-    assert len(ids) == 2
-    kinds = {client.docs[i]["metadata"]["kind"] for i in ids}
-    assert kinds == {"raw", "fact"}
-    raw_id = next(i for i in ids if client.docs[i]["metadata"]["kind"] == "raw")
-    assert client.docs[raw_id]["content"] == "pan card\nPAN ABCDE1234F"
+    assert len(ids) == 1
+    assert client.docs[ids[0]]["content"] == "pan card\nPAN ABCDE1234F"
 
 
 def test_sync_forgets_demoted_siblings(monkeypatch):
@@ -120,6 +114,29 @@ def test_forget_deletes_stored_docs(monkeypatch):
     with db.get_conn() as conn:
         ids = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()[0]
     assert ids is None
+
+
+def test_forget_sweeps_orphaned_custom_id_docs(monkeypatch):
+    """Regression: a delete during a slow agent run (or a lost memory_doc_ids
+    column) used to leave orphans behind. The customId-prefix sweep finds
+    everything the capture owns regardless of bookkeeping."""
+    client = _enable_memory(monkeypatch)
+    with db.get_conn() as conn:
+        conn.execute(
+            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
+            "VALUES ('text', 'content with no stored doc ids', NULL, 'none', 70707, 1, 1, 'indexed')"
+        )
+        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 70707").fetchone()[0]
+    client.list_documents = lambda: [
+        {"id": "live-other", "customId": "nm-42-raw"},
+        {"id": "orphan-raw", "customId": f"nm-{cid}-raw"},
+        {"id": "orphan-fact", "customId": f"nm-{cid}-f0"},
+        {"id": "unrelated", "customId": "nm-9999-raw"},
+        {"id": "no-custom-id", "customId": None},
+    ]
+    memsync.forget_capture(cid)
+    # Only this capture's docs are swept — other captures' docs survive.
+    assert set(client.deleted) == {"orphan-raw", "orphan-fact"}
 
 
 def test_sync_is_noop_when_disabled():

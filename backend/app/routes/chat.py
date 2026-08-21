@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from .. import db
 from ..config import settings
 from ..memory.client import get_client
-from ..retrieval.chat import NOT_FOUND_ANSWER, grounded_answer, scrub_injection, transcript_fact_answer
+from ..retrieval.chat import NOT_FOUND_ANSWER, grounded_answer, scrub_injection
 from ..retrieval.intent import REFUSAL_ANSWER, _USER_REFERENCE_RE, classify as classify_intent
 from ..schemas import (
     ChatRequest,
@@ -157,7 +157,13 @@ def _memory_hits(query: str) -> list[dict]:
     """Retrieve from supermemory: chunk hits grouped per capture (top chunks by
     similarity), capped at the top captures, with a v1-style context budget so
     duplicated uploads can't starve the LLM context. Disabled/unreachable
-    memory degrades to an empty hit list (honest not-found, no local stack)."""
+    memory degrades to an empty hit list (honest not-found, no local stack).
+
+    Memory nodes (the agent's graph memories) are deduped by text and grounded
+    against the capture's stored content: a memory node that shares no
+    substantive token with its capture's real content is cross-attached junk
+    (the agent mirrors other docs' content into unrelated fact docs) and is
+    dropped."""
     if not settings.memory_enabled:
         return []
     try:
@@ -165,9 +171,7 @@ def _memory_hits(query: str) -> list[dict]:
     except Exception:
         return []
     per_capture: dict[int, list[dict]] = {}
-    for r in results:
-        if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
-            continue
+    for r in _filter_memory_results(results):
         try:
             cid = int(r["metadata"].get("capture_id", ""))
         except (TypeError, ValueError):
@@ -190,6 +194,52 @@ def _memory_hits(query: str) -> list[dict]:
         if budget <= 0:
             break
     return hits
+
+
+def _filter_memory_results(results: list[dict]) -> list[dict]:
+    """Dedupe results by normalized text and drop cross-attached memory nodes
+    (the agent mirrors other docs' content into unrelated fact docs — e.g. the
+    transcript's course memory copied onto a "buy batteries" note). Keeps the
+    first result per text; memory-kind results are grounded against their
+    capture's real content; chunk results are real content and always pass."""
+    seen_texts: set[str] = set()
+    out: list[dict] = []
+    for r in results:
+        if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
+            continue
+        text = re.sub(r"\s+", " ", r["content"]).lower().strip()
+        if text in seen_texts:
+            continue
+        seen_texts.add(text)
+        if r.get("kind") == "memory" and not _memory_grounded(int(r["metadata"].get("capture_id", 0) or 0), text):
+            continue
+        out.append(r)
+    return out
+
+
+def _memory_grounded(capture_id: int, text: str) -> bool:
+    """True if a memory node's text shares at least one substantive token with
+    the capture's stored content. Cross-attached agent memories (transcript
+    facts mirrored onto "buy batteries" notes) share nothing and are dropped;
+    genuine paraphrases of the capture share tokens."""
+    try:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT content FROM captures WHERE id = ?", (capture_id,)
+            ).fetchone()
+    except Exception:
+        return True
+    if not row or not row["content"]:
+        return False
+    mwords = {
+        w for w in re.findall(r"[a-z0-9]{3,}", text) if w not in _STOPWORDS
+    }
+    cwords = {
+        w
+        for w in re.findall(r"[a-z0-9]{3,}", row["content"].lower())
+        if w not in _STOPWORDS
+    }
+    return bool(mwords & cwords)
 
 
 _YES_NO_WORDS = {
@@ -270,27 +320,9 @@ def chat(payload: ChatRequest):
             }
         ] + hits
 
-    # Deterministic transcript facts (semester courses, total credits) are
-    # parsed in Python from the capture contents — no LLM, no gates.
-    det = transcript_fact_answer(query, hits)
-
-    # SENSITIVE-FACTS (OPT2): dormant — identity queries (address/name/DOB)
-    # used to answer deterministically from the stored, corroborated sensitive
-    # facts. Identity now flows through supermemory retrieval + the LLM.
-    # fact_key = _sensitive_fact_key(query)
-    # fact = _sensitive_fact_value(fact_key) if fact_key else None
-    fact = None
-
     show_doc = _find_document(query, hits)
     if show_doc:
         answer = f"Here's your {show_doc.filename or 'document'} — opened in the preview."
-        found = True
-        structured = None
-    elif det is not None:
-        answer, found, structured = det
-    elif fact is not None:
-        _cid, value = fact
-        answer = f"Your {_FACT_ANSWER_LABELS[fact_key]} is {value}."
         found = True
         structured = None
     else:
@@ -307,18 +339,11 @@ def chat(payload: ChatRequest):
             answer, found, structured = NOT_FOUND_ANSWER, False, None
 
     source_ids = [h["capture_id"] for h in hits]
-    # SENSITIVE-FACTS (OPT2): dormant — `fact` was appended to source_ids and
-    # given a high-tier ChatSource below; identity sources now come from hits.
-    # if fact is not None and fact[0] not in source_ids:
-    #     source_ids.append(fact[0])
     tiers = _sensitivity_tiers(source_ids)
-    hit_ids = {h["capture_id"] for h in hits}
     sources = [
         ChatSource(capture_id=h["capture_id"], snippet=h["snippet"], sensitivity_tier=tiers[h["capture_id"]])
         for h in hits
     ]
-    # if fact is not None and fact[0] not in hit_ids:
-    #     sources.append(ChatSource(capture_id=fact[0], snippet="", sensitivity_tier="high"))
 
     with db.get_conn() as conn:
         conn.execute(
@@ -348,10 +373,11 @@ def chat(payload: ChatRequest):
 
 # SENSITIVE-FACTS (OPT2): dormant — the deterministic identity-fact answer
 # layer (closed vocabulary + corroboration + SQLite scan). Identity questions
-# now flow through supermemory retrieval + the LLM. Uncomment this block and
-# the `fact` wiring in chat() to restore it (revive ingestion/sensitive.py,
-# tasks.py, and captures.py scheduling together). Kept verbatim so revival is
-# uncomment-and-go.
+# now flow through supermemory retrieval + the LLM. NOTE: revival is no longer
+# purely uncomment-and-go — the deterministic answer branch was removed from
+# chat() and retrieval/chat.py no longer exports _extract_json (answers are
+# schema-constrained now), so wire `fact` back into the show_doc/det chain and
+# adapt ingestion/sensitive.py's parsing when restoring this.
 #
 # _FACT_QUERY_WORDS = {
 #     "address": {

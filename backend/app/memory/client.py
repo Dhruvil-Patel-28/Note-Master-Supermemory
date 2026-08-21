@@ -54,7 +54,6 @@ class MemoryClient:
         container_tag: str | None = None,
         metadata: dict | None = None,
         custom_id: str | None = None,
-        entity_context: str | None = None,
     ) -> str | None:
         payload: dict = {"content": content}
         if container_tag:
@@ -63,14 +62,20 @@ class MemoryClient:
             payload["metadata"] = metadata
         if custom_id:
             payload["customId"] = custom_id
-        if entity_context:
-            payload["entityContext"] = entity_context
         data = self._post("/v3/documents", payload)
         return data.get("id") if data else None
 
     def document_status(self, doc_id: str) -> str | None:
         data = self._get(f"/v3/documents/{doc_id}")
         return data.get("status") if data else None
+
+    def list_documents(self, limit: int = 500) -> list[dict]:
+        """All docs in the store (id, customId, metadata) — used by the
+        forget-sweep and orphan tooling. Best-effort: [] when unreachable."""
+        data = self._post("/v3/documents/list", {"limit": limit})
+        if not data:
+            return []
+        return data.get("memories") or data.get("documents") or []
 
     def delete_document(self, doc_id: str) -> bool:
         return self._delete(f"/v3/documents/{doc_id}")
@@ -105,6 +110,7 @@ class MemoryClient:
             out.append(
                 {
                     "content": content,
+                    "kind": "memory" if r.get("memory") else "chunk",
                     "metadata": r.get("metadata") or {},
                     "similarity": r.get("similarity", 0.0),
                 }

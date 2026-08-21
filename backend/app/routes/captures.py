@@ -151,9 +151,10 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
 @router.delete("/{capture_id}", status_code=204)
 def delete_capture(capture_id: int):
     row = _get_capture(capture_id)
-    from ..memory.sync import forget_capture
+    from ..memory.sync import forget_capture, sync_capture
 
     forget_capture(capture_id)
+    promoted = None
     with db.get_conn() as conn:
         conn.execute("DELETE FROM captures WHERE id = ?", (capture_id,))
         if row["document_group_id"] is not None:
@@ -165,8 +166,19 @@ def delete_capture(capture_id: int):
                    )""",
                 (row["document_group_id"], row["document_group_id"]),
             )
+            if row["is_latest"]:
+                # Deleting the latest version promotes an older sibling — but
+                # its memory docs were already forgotten when it was demoted
+                # (version bump), so memory would hold nothing for this group.
+                # Re-sync the promoted version (same reason restore re-syncs).
+                promoted = conn.execute(
+                    "SELECT id FROM captures WHERE document_group_id = ? AND is_latest = 1",
+                    (row["document_group_id"],),
+                ).fetchone()
     if row["raw_content_ref"]:
         storage.delete_file(row["raw_content_ref"])
+    if promoted is not None:
+        sync_capture(promoted["id"])
 
 
 @router.post("/{capture_id}/restore", response_model=CaptureOut)

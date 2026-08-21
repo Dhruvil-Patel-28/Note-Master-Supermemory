@@ -2,7 +2,7 @@
 
 These tests exercise the real knowledge layer: captures mirror into
 supermemory via sync_capture, chat retrieves over the real /v4/search, and
-the PIN gate anchors against real high-tier captures. They are NOT hermetic:
+high-tier captures sync like any other. They are NOT hermetic:
 
   - run ONLY via scripts/run-memory-tests.sh (sets MEMORY_ENABLED=1,
     MEMORY_API_KEY from ~/.supermemory/api-key, MEMORY_CONTAINER_TAG=nm_test)
@@ -12,8 +12,9 @@ the PIN gate anchors against real high-tier captures. They are NOT hermetic:
   - write only into the nm_test container — the user's real data lives in
     user_main and is never touched; tests delete their captures at the end
 
-Ingest is async (queued -> indexing -> done, ~13-27s/doc with the 3b memory
-agent), so every test polls supermemory until its capture is searchable
+Ingest is async (queued -> indexing -> done; the memory agent's runtime
+depends on the configured provider — seconds on Groq, ~13-27s/doc with the
+local 3b), so every test polls supermemory until its capture is searchable
 (180s cap) before asserting on chat answers.
 """
 

@@ -5,7 +5,6 @@ import time
 from .. import db
 from ..config import settings
 from .client import get_client
-from .facts import facts_for_capture
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +43,36 @@ def _delete_with_retry(client, doc_id: str) -> bool:
     return False
 
 
+def _sweep_custom_id_docs(client, capture_id: int) -> list[str]:
+    """Delete every doc whose customId starts with nm-{capture_id}- and return
+    the ids removed.
+
+    Self-healing fallback for deletion: the stored memory_doc_ids column can
+    be empty (sync crashed before writing it back) and _delete_with_retry can
+    time out on slow ingests — both leave orphans that retrieval still ranks.
+    The customIds are deterministic, so a store scan finds everything this
+    capture owns regardless of what the column says."""
+    try:
+        listing = client.list_documents()
+    except Exception:
+        return []
+    prefix = f"nm-{capture_id}-"
+    removed: list[str] = []
+    for doc in listing:
+        custom_id = (doc.get("customId") or "")
+        if not custom_id.startswith(prefix):
+            continue
+        if client.delete_document(doc["id"]):
+            removed.append(doc["id"])
+    return removed
+
+
 def forget_capture(capture_id: int) -> None:
     """Delete all supermemory docs owned by a capture (best-effort).
 
-    Called on capture delete, edit re-ingest, version demotion.
-    """
+    Called on capture delete, edit re-ingest, version demotion. Deletes the
+    stored doc ids first, then sweeps by customId prefix so nothing owned by
+    this capture survives even when bookkeeping was lost."""
     if not settings.memory_enabled:
         return
     with _SYNC_LOCK:
@@ -63,6 +87,7 @@ def forget_capture(capture_id: int) -> None:
             client = get_client()
             for doc_id in ids:
                 _delete_with_retry(client, doc_id)
+            _sweep_custom_id_docs(client, capture_id)
         except Exception as exc:
             logger.warning("memory forget failed for capture %s: %s", capture_id, exc)
 
@@ -72,7 +97,7 @@ def _custom_id(capture_id: int, slot: str) -> str:
 
 
 def sync_capture(capture_id: int) -> None:
-    """Push a capture into supermemory as one raw-content doc + fact docs.
+    """Push a capture into supermemory as one raw-content doc.
 
     Design rules (handoff §3, carried from v1):
       - memory holds only the latest version per document group — syncing a
@@ -80,11 +105,12 @@ def sync_capture(capture_id: int) -> None:
         doesn't know)
       - every doc keeps capture_id / sensitivity_tier / type metadata so
         retrieval can cite sources (tiers are labels only — nothing is gated)
-      - docs carry deterministic customIds (nm-{capture_id}-{slot}) so edits
+      - docs carry deterministic customIds (nm-{capture_id}-raw) so edits
         upsert in place instead of racing deletes against the ingester
         (DELETE during processing returns 409)
-      - entityContext guides the agent's memory extraction so the graph's
-        nodes reflect the capture's real facts instead of chunk-like noise
+      - understanding is the server's job: its memory agent (Groq 70B or
+        local hermes3, see scripts/run-supermemory.sh) extracts the graph
+        memories from the raw content — no local fact extraction anymore
       - all best-effort: supermemory down = capture still indexes
     """
     if not settings.memory_enabled:
@@ -108,57 +134,25 @@ def sync_capture(capture_id: int) -> None:
 
             client = get_client()
             tag = settings.memory_container_tag
-            base_meta = {
+            meta = {
                 "capture_id": str(capture_id),
                 "sensitivity_tier": row["sensitivity_tier"],
                 "type": row["type"],
+                "kind": "raw",
             }
-            docs: list[str] = []
-
-            fact_kind = _fact_kind(row["type"], row["content"])
-            facts = facts_for_capture(row["type"], row["content"])
 
             raw = _memory_text(row)
+            doc_ids: list[str] = []
             if raw:
-                # entityContext guides the agent's memory extraction for this
-                # doc — the deterministic facts are the best hint available
-                # ("The user has a CGPA of 7.57..."), so the graph's nodes
-                # reflect real facts instead of chunk-like noise.
-                hint = " ".join(facts)[:1500] if facts else None
-                doc_id = client.add_document(
-                    raw,
-                    tag,
-                    {**base_meta, "kind": "raw"},
-                    custom_id=_custom_id(capture_id, "raw"),
-                    entity_context=hint,
-                )
+                doc_id = client.add_document(raw, tag, meta, custom_id=_custom_id(capture_id, "raw"))
                 if doc_id:
-                    docs.append(doc_id)
+                    doc_ids.append(doc_id)
 
-            for i, fact in enumerate(facts):
-                doc_id = client.add_document(
-                    fact,
-                    tag,
-                    {**base_meta, "kind": "fact", "fact_kind": fact_kind},
-                    custom_id=_custom_id(capture_id, f"f{i}"),
-                )
-                if doc_id:
-                    docs.append(doc_id)
-
-            if docs:
+            if doc_ids:
                 with db.get_conn() as conn:
                     conn.execute(
                         "UPDATE captures SET memory_doc_ids = ? WHERE id = ?",
-                        (",".join(docs), capture_id),
+                        (",".join(doc_ids), capture_id),
                     )
         except Exception as exc:
             logger.warning("memory sync failed for capture %s: %s", capture_id, exc)
-
-
-def _fact_kind(capture_type: str, content: str) -> str:
-    if capture_type == "doc":
-        if "TRANSCRIPT" in content.upper() or "GRADE" in content.upper():
-            return "transcript"
-        if "RESUME" in content.upper() or "EDUCATION" in content.upper():
-            return "resume"
-    return "note"

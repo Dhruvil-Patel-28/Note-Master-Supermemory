@@ -5,11 +5,7 @@ from app.config import settings
 from app.ingestion.classify import classify
 from app.retrieval.chat import (
     NOT_FOUND_ANSWER,
-    _extract_cgpa,
-    _extract_credits,
     _parse_response,
-    _parse_transcript_sections,
-    _semester_number,
 )
 
 
@@ -53,23 +49,25 @@ class TestChatParse:
         answer, found, structured = _parse_response('["1"]')
         assert not found and answer == NOT_FOUND_ANSWER and structured is None
 
-    def test_trailing_citation_junk_inside_object_is_salvaged(self):
-        answer, found, _ = _parse_response(
+    def test_malformed_json_returns_not_found_not_raw_text(self):
+        # The grammar makes this near-impossible in production; the contract
+        # is still honest not-found, never raw model chatter.
+        answer, found, structured = _parse_response(
             '{"kind": "prose", "answer": "Your college name is IIIT Nagpur.", ["1"]}'
         )
-        assert found and answer == "Your college name is IIIT Nagpur."
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
 
-    def test_fields_array_missing_closing_bracket_is_salvaged(self):
+    def test_fields_array_missing_closing_bracket_returns_not_found(self):
         answer, found, structured = _parse_response(
             '{"kind": "fields", "answer": "You did 2 courses [1].", '
             '"fields": [{"key": "CSL 102", "value": "DATA STRUCTURES"}, '
             '{"key": "CSL 103", "value": "APPLICATION PROGRAMMING"}}'
         )
-        assert found and answer == "You did 2 courses [1]."
-        assert structured["fields"] == [
-            {"key": "CSL 102", "value": "DATA STRUCTURES"},
-            {"key": "CSL 103", "value": "APPLICATION PROGRAMMING"},
-        ]
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
+
+    def test_empty_answer_maps_to_not_found(self):
+        answer, found, structured = _parse_response('{"kind": "prose", "answer": "", "fields": []}')
+        assert not found and answer == NOT_FOUND_ANSWER and structured is None
 
     def test_filter_fields_drops_ungrounded_keys(self):
         from app.retrieval.chat import _filter_fields
@@ -154,8 +152,31 @@ class TestMemoryClientSearch:
         assert sent["payload"]["containerTag"] == "nm_test"
         assert [o["content"] for o in out] == ["The user has a CGPA of 7.57.", "Grand Total Credit 122"]
         assert out[0]["metadata"]["capture_id"] == "45"
+        assert [o["kind"] for o in out] == ["memory", "chunk"]
 
-    def test_add_document_sends_entity_context(self, monkeypatch):
+    def test_hybrid_tags_memory_vs_chunk_kinds(self, monkeypatch):
+        from app.memory import client as memclient
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "results": [
+                        {"memory": "A", "metadata": {}, "similarity": 0.5},
+                        {"chunk": "B", "metadata": {}, "similarity": 0.5},
+                    ]
+                },
+            )
+
+        monkeypatch.setattr(memclient.httpx, "post", fake_post)
+        monkeypatch.setattr(
+            memclient, "settings", SimpleNamespace(memory_container_tag="nm_test", memory_enabled=True)
+        )
+        c = memclient.MemoryClient("http://x", "key")
+        out = c.search("q")
+        assert {o["kind"] for o in out} == {"memory", "chunk"}
+
+    def test_add_document_sends_custom_id(self, monkeypatch):
         from app.memory import client as memclient
 
         sent = {}
@@ -166,10 +187,105 @@ class TestMemoryClientSearch:
 
         monkeypatch.setattr(memclient.httpx, "post", fake_post)
         c = memclient.MemoryClient("http://x", "key")
-        doc_id = c.add_document("raw text", "t", {"kind": "raw"}, custom_id="nm-1-raw", entity_context="CGPA 7.57")
+        doc_id = c.add_document("raw text", "t", {"kind": "raw"}, custom_id="nm-1-raw")
         assert doc_id == "doc1"
-        assert sent["payload"]["entityContext"] == "CGPA 7.57"
         assert sent["payload"]["customId"] == "nm-1-raw"
+
+
+class TestMemoryHitGrounding:
+    def test_dedupes_identical_memory_texts(self):
+        from app.routes import chat as chat_route
+
+        monkeypatch = None  # placeholder to keep signature simple
+        results = [
+            {
+                "content": "The user's 1st semester courses are: MAL103.",
+                "kind": "memory",
+                "metadata": {"capture_id": "5"},
+                "similarity": 0.7,
+            },
+            {
+                "content": "The user's 1st semester courses are: MAL103.",
+                "kind": "memory",
+                "metadata": {"capture_id": "5"},
+                "similarity": 0.69,
+            },
+            {
+                "content": "MAL103 is a calculus course.",
+                "kind": "chunk",
+                "metadata": {"capture_id": "5"},
+                "similarity": 0.5,
+            },
+        ]
+        orig = chat_route._memory_grounded
+        chat_route._memory_grounded = lambda cid, text: True
+        try:
+            out = chat_route._filter_memory_results(results)
+        finally:
+            chat_route._memory_grounded = orig
+        assert len(out) == 2
+        assert [h["content"] for h in out] == [
+            "The user's 1st semester courses are: MAL103.",
+            "MAL103 is a calculus course.",
+        ]
+
+    def test_drops_cross_attached_memory_nodes(self):
+        from app.routes import chat as chat_route
+
+        results = [
+            {
+                "content": "The user's 1st semester courses are: MAL103.",
+                "kind": "memory",
+                "metadata": {"capture_id": "13"},
+                "similarity": 0.7,
+            },
+        ]
+        orig = chat_route._memory_grounded
+        chat_route._memory_grounded = lambda cid, text: False
+        try:
+            out = chat_route._filter_memory_results(results)
+        finally:
+            chat_route._memory_grounded = orig
+        assert out == []
+
+    def test_keeps_memory_when_grounded_and_chunk_always(self):
+        from app.routes import chat as chat_route
+
+        results = [
+            {
+                "content": "The user studies at IIIT Nagpur.",
+                "kind": "memory",
+                "metadata": {"capture_id": "5"},
+                "similarity": 0.6,
+            },
+            {
+                "content": "some unrelated chunk",
+                "kind": "chunk",
+                "metadata": {"capture_id": "6"},
+                "similarity": 0.5,
+            },
+        ]
+        orig = chat_route._memory_grounded
+        chat_route._memory_grounded = lambda cid, text: cid == 5
+        try:
+            out = chat_route._filter_memory_results(results)
+        finally:
+            chat_route._memory_grounded = orig
+        assert len(out) == 2
+
+    def test_memory_grounded_checks_capture_content(self, db):
+        from app.db import init_db
+        from app.routes import chat as chat_route
+
+        init_db()
+
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO captures (id, type, content) VALUES (?, 'text', ?)",
+                (9913, "remember to buy batteries for the remote"),
+            )
+        assert chat_route._memory_grounded(9913, "the user's 1st semester courses are mal103") is False
+        assert chat_route._memory_grounded(9913, "buy batteries from the shop") is True
 
 
 class TestGroundingVerification:
@@ -201,14 +317,6 @@ class TestGroundingVerification:
 
 
 class TestIntentClassifier:
-    def test_parse_whitelists_intents_and_rejects_junk(self):
-        from app.retrieval.intent import _parse_intent
-
-        assert _parse_intent('{"intent": "code"}') == "code"
-        assert _parse_intent('sure! {"intent": "general"} trailing words') == "general"
-        assert _parse_intent('{"intent": "banana"}') is None
-        assert _parse_intent("total junk") is None
-
     def test_llm_failure_falls_back_to_notes(self, monkeypatch):
         from app.retrieval import intent
 
@@ -229,7 +337,7 @@ class TestIntentClassifier:
         assert intent.classify("write a function to reverse a string") == "code"
         assert intent.classify("what is my pan number") == "notes"
 
-    def test_llm_output_is_salvaged_not_overridden(self, monkeypatch):
+    def test_constrained_output_is_classified(self, monkeypatch):
         from app.retrieval import intent
 
         class Stub:
@@ -237,77 +345,34 @@ class TestIntentClassifier:
                 self.raw = raw
 
             def chat(self, **kw):
+                # The grammar guarantees exactly this shape; the stub proves
+                # the happy path reads it without any salvage.
                 return {"message": {"content": self.raw}}
 
-        monkeypatch.setattr(intent, "_client", lambda: Stub('here it is: {"intent": "general"}'))
-        assert intent.classify("print my name") == "general"
+        monkeypatch.setattr(intent, "_client", lambda: Stub('{"intent": "code"}'))
+        assert intent.classify("print my name") == "code"
+        monkeypatch.setattr(intent, "_client", lambda: Stub('{"intent": "general"}'))
+        assert intent.classify("what is the capital of france") == "general"
 
+    def test_general_user_reference_downgrades_to_notes(self, monkeypatch):
+        from app.retrieval import intent
 
-class TestSemesterParser:
-    def test_semester_number_detection(self):
-        assert _semester_number("give me my 6th sem courses") == 6
-        assert _semester_number("my 2nd semester courses") == 2
-        assert _semester_number("first semester courses") == 1
-        assert _semester_number("semester five") == 5
-        assert _semester_number("what is my cgpa") is None
+        class Stub:
+            def chat(self, **kw):
+                return {"message": {"content": '{"intent": "general"}'}}
 
-    def test_parses_roman_and_digit_labels(self):
-        text = (
-            "Total\nI\nMAL103 CALCULUS FOR ENGINEERS\nBB\n4\n"
-            "Total\nII\nMAL 104 MATRICES\nCD\n4\nHUL 101 COMMUNICATION SKILLS\nBC\n3"
-        )
-        sections = _parse_transcript_sections(text)
-        assert [(n, len(c)) for n, c in sections] == [(1, 1), (2, 2)]
-        assert sections[1][1][0] == ("MAL 104", "MATRICES")
+        monkeypatch.setattr(intent, "_client", lambda: Stub())
+        assert intent.classify("where do i study") == "notes"
 
-    def test_credit_digit_after_grade_is_not_a_label(self):
-        text = (
-            "I\nMAL103 CALCULUS FOR ENGINEERS\nBB\n4\n"
-            "HUL 102 ENVIRNMENTAL STUDIES\nBC\n2\n"
-            "Total\nII\nMAL 104 MATRICES\nCD\n4\n"
-            "Total\nIII\nMAL 201 NUMERICAL METHODS\nBC\n4"
-        )
-        sections = _parse_transcript_sections(text)
-        assert [(n, len(c)) for n, c in sections] == [(1, 2), (2, 1), (3, 1)]
+    def test_junk_payload_falls_back_to_notes(self, monkeypatch):
+        from app.retrieval import intent
 
-    def test_ss_grade_is_recognized(self):
-        text = "I\nSAP 101 HEALTH SPORT AND SAFETY\nSS\n0\nHUL 102 ENVIRNMENTAL STUDIES\nBC\n2"
-        sections = _parse_transcript_sections(text)
-        assert sections == [(1, [("SAP 101", "HEALTH SPORT AND SAFETY"), ("HUL 102", "ENVIRNMENTAL STUDIES")])]
+        class Stub:
+            def chat(self, **kw):
+                return {"message": {"content": "not json at all"}}
 
-    def test_combined_no_space_codes(self):
-        text = "I\nMAL103 CALCULUS FOR ENGINEERS\nBB\n4\nBEL102 ELEMENTS OF ELECTRICAL ENGINEERING\nBC\n4"
-        sections = _parse_transcript_sections(text)
-        assert [(c, n) for c, n in sections[0][1]] == [
-            ("MAL103", "CALCULUS FOR ENGINEERS"),
-            ("BEL102", "ELEMENTS OF ELECTRICAL ENGINEERING"),
-        ]
-
-    def test_grade_missing_drops_course(self):
-        text = "I\nMAL103 CALCULUS FOR ENGINEERS\nBB\n4\nCSL 101 COMPUTER PROGRAMMING"
-        assert _parse_transcript_sections(text) == [(1, [("MAL103", "CALCULUS FOR ENGINEERS")])]
-
-
-class TestCgpaExtract:
-    def test_colon_on_own_line(self):
-        assert _extract_cgpa("Total\nCGPA\n:\n7.57\nGrand Total Credit") == "7.57"
-
-    def test_inline_colon(self):
-        assert _extract_cgpa("CGPA: 9.12") == "9.12"
-
-    def test_no_cgpa(self):
-        assert _extract_cgpa("MAL103 CALCULUS FOR ENGINEERS") is None
-
-
-class TestCreditsExtract:
-    def test_tab_separated_transcript(self):
-        assert _extract_credits("Total\nCGPA\n:\n7.57\nGrand\tTotal\tCredit\n:\n122") == "122"
-
-    def test_inline_colon(self):
-        assert _extract_credits("Grand Total Credit : 122") == "122"
-
-    def test_no_total_credit(self):
-        assert _extract_credits("CSL 102 DATA STRUCTURES\nCredit\n4") is None
+        monkeypatch.setattr(intent, "_client", lambda: Stub())
+        assert intent.classify("car registration number") == "notes"
 
 
 class TestClassify:
@@ -563,3 +628,76 @@ class TestOcrRouting:
         )
         with pytest.raises(ValueError, match="OCR is disabled"):
             extract_doc(scanned)
+
+
+class TestDoclingRouting:
+    """Docling is the primary PDF extractor; the pypdf/VLM path is the
+    automatic fallback when conversion fails or DOCLING_ENABLED=0."""
+
+    def _enable(self, value):
+        from app.config import settings
+
+        object.__setattr__(settings, "docling_enabled", value)
+
+    def _cupsfilter_pdf(self, tmp_path):
+        src = tmp_path / "doc.txt"
+        src.write_text("PAN card ABCDE1234F")
+        result = __import__("subprocess").run(
+            ["cupsfilter", str(src)], check=True, capture_output=True
+        )
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(result.stdout)
+        return pdf
+
+    def test_enabled_pdf_goes_through_docling(self, tmp_path, monkeypatch):
+        from app.ingestion import ocr
+
+        calls = []
+
+        class FakeDocument:
+            def export_to_markdown(self):
+                return "| PAN | card |\n| ABCDE1234F | photo |"
+
+        class FakeResult:
+            document = FakeDocument()
+
+        class FakeConverter:
+            def convert(self, path):
+                calls.append(path)
+                return FakeResult()
+
+        monkeypatch.setattr(ocr, "_get_converter", lambda: FakeConverter())
+        self._enable(True)
+        try:
+            out = ocr.extract_doc(self._cupsfilter_pdf(tmp_path))
+        finally:
+            self._enable(False)
+        assert len(calls) == 1
+        assert "| ABCDE1234F | photo |" in out
+
+    def test_conversion_failure_falls_back_to_legacy_extractor(self, tmp_path, monkeypatch):
+        from app.ingestion import ocr
+
+        def boom(path):
+            raise RuntimeError("docling exploded")
+
+        monkeypatch.setattr(ocr, "_get_converter", lambda: boom)
+        self._enable(True)
+        try:
+            out = ocr.extract_doc(self._cupsfilter_pdf(tmp_path))
+        finally:
+            self._enable(False)
+        # Legacy pypdf extraction still recovers the text layer.
+        assert "PAN card ABCDE1234F" in out
+
+    def test_real_docling_conversion(self, tmp_path):
+        """Real conversion — loads the layout models (cached after first run).
+        Left unmarked so regressions surface in the default suite."""
+        from app.ingestion.ocr import extract_doc
+
+        self._enable(True)
+        try:
+            out = extract_doc(self._cupsfilter_pdf(tmp_path))
+        finally:
+            self._enable(False)
+        assert "PAN" in out and "ABCDE1234F" in out

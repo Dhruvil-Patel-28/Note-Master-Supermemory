@@ -2,7 +2,7 @@ import json
 import re
 
 from ..config import settings
-from .chat import _client, _extract_json
+from .chat import _client
 
 REFUSAL_ANSWER = "I can only answer questions about your own notes and documents — I don't have general knowledge or coding abilities."
 
@@ -54,21 +54,24 @@ _USER_REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
-
-def _parse_intent(raw: str) -> str | None:
-    try:
-        payload = json.loads(_extract_json(raw) or "{}")
-    except Exception:
-        return None
-    intent = payload.get("intent")
-    return intent if intent in _INTENT_WHITELIST else None
+_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": ["notes", "code", "general", "hybrid", "unknown"],
+        }
+    },
+    "required": ["intent"],
+}
 
 
 def classify(query: str) -> str:
     """Route a question: notes path vs clean refusal (code/general).
 
-    Any failure (LLM down, unparseable output, junk intent) falls back to
-    'notes' — the pre-existing behavior — unless the query has strong code
+    The enum grammar constrains decoding to the whitelist, so no salvage is
+    needed. Any failure (LLM down, runtime dropped the constraint) falls back
+    to 'notes' — the pre-existing behavior — unless the query has strong code
     hints, which are refused instead of producing garbage.
     """
     try:
@@ -78,10 +81,11 @@ def classify(query: str) -> str:
                 {"role": "system", "content": _CLASSIFIER_SYSTEM},
                 {"role": "user", "content": query},
             ],
-            options={"temperature": 0.1, "think": False, "num_predict": 256},
+            options={"temperature": 0.1, "think": False, "num_predict": 64},
+            format=_INTENT_SCHEMA,
         )["message"]["content"]
-        intent = _parse_intent(raw)
-        if intent is not None:
+        intent = json.loads(raw).get("intent")
+        if intent in _INTENT_WHITELIST:
             if intent == "general" and _USER_REFERENCE_RE.search(query) and not _CODE_HINTS.search(query):
                 return "notes"
             return intent

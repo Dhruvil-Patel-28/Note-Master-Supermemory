@@ -12,6 +12,7 @@ class Settings:
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     ocr_enabled: bool = os.getenv("OCR_ENABLED", "1") == "1"
     ocr_model: str = os.getenv("OCR_MODEL", "qwen2.5vl:3b")
+    docling_enabled: bool = os.getenv("DOCLING_ENABLED", "1") == "1"
     asr_model: str = os.getenv("ASR_MODEL", "base")
     memory_enabled: bool = os.getenv("MEMORY_ENABLED", "1") == "1"
     memory_url: str = os.getenv("MEMORY_URL", "http://127.0.0.1:6767")
