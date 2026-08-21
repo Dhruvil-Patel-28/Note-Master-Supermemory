@@ -77,6 +77,20 @@ class MemoryClient:
             return []
         return data.get("memories") or data.get("documents") or []
 
+    def list_memories(self, limit: int = 500) -> list[dict]:
+        """All graph memory entries in the container ({memory, documentIds}).
+        Powers document-scoped fact retrieval (enumeration questions): search
+        ranks globally by query similarity and structurally under-represents
+        any single document's facts; listing + client-side filtering is
+        comprehensive. Best-effort: [] when unreachable."""
+        data = self._post(
+            "/v4/memories/list",
+            {"containerTags": [settings.memory_container_tag], "limit": limit},
+        )
+        if not data:
+            return []
+        return data.get("memoryEntries") or []
+
     def delete_document(self, doc_id: str) -> bool:
         return self._delete(f"/v3/documents/{doc_id}")
 

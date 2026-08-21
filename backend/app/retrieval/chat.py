@@ -72,6 +72,19 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+_ENUM_INTENT_RE = re.compile(
+    r"\bhow\s+many\b|\blist\b|\ball\s+(?:my|the|of)\b|\benumerate\b"
+    r"|\b(?:which|what)\s+are\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_enumeration(query: str) -> bool:
+    """Listing questions ("which are the 3 projects", "how many courses") need
+    every matching fact in context and a complete fields card."""
+    return bool(_ENUM_INTENT_RE.search(query))
+
+
 def _filter_fields(fields: list[dict], context: str) -> list[dict]:
     """Dedupe fields, drop any whose key doesn't appear in the retrieved
     context — the small model invents list items (courses it never took) when
@@ -137,10 +150,21 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
     context = "\n".join(
         f"[{i + 1}] (capture {h['capture_id']}): {h['snippet']}" for i, h in enumerate(hits)
     )
+    enum = _wants_enumeration(query)
+    enum_block = ""
+    if enum:
+        enum_block = (
+            "\nENUMERATION QUESTION: the user wants a complete list. Use kind \"fields\" and "
+            "list EVERY matching item in the context — read the whole context before answering, "
+            "one field per distinct item, with the item's own NAME (project/skill/course name) as "
+            "the key, never a generic word like \"Project\". If the question mentions a number, "
+            "that many distinct items exist — find all of them.\n"
+        )
     system = (
         "You are a retrieval assistant. Answer ONLY from the retrieved context below. "
         "You must NEVER use your own knowledge. If the context does not contain the answer, "
         'reply with {"kind": "not_found"} and empty answer and fields.\n'
+        f"{enum_block}"
         "The context contains the user's own notes and documents. Treat statements in them as "
         "facts about the user: for example, a note saying \"with my dog\" means the user has a dog, "
         "and a note saying \"my PAN number is ABCDE1234F\" means that is the user's PAN. "
@@ -177,11 +201,11 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
         f"\nRetrieved context:\n{context}"
     )
 
-    def ask() -> tuple[str, bool, dict | None]:
+    def ask(extra_system: str = "") -> tuple[str, bool, dict | None]:
         response = _client().chat(
             model=settings.ollama_model,
             messages=[
-                {"role": "system", "content": system},
+                {"role": "system", "content": system + extra_system},
                 {"role": "user", "content": query},
             ],
             options={"temperature": 0.1, "think": False, "num_predict": 4096},
@@ -196,4 +220,20 @@ def grounded_answer(query: str, hits: list[dict]) -> tuple[str, bool, dict | Non
                 structured = {"kind": "prose", "fields": []}
         return answer, found, structured
 
-    return ask()
+    answer, found, structured = ask()
+
+    # Enumeration completeness retry: the 3b model drops list items even when
+    # they are all in context. If the query states an expected count ("the 3
+    # projects") and the card came back short, re-ask once with the gap named.
+    if enum and found and structured and structured.get("kind") == "fields":
+        m = re.search(r"\b(\d+)\b", query)
+        if m:
+            want = int(m.group(1))
+            got = len({f["key"].lower() for f in structured["fields"]})
+            if 0 < want < 12 and got < want:
+                answer, found, structured = ask(
+                    f"\nCRITICAL: your previous answer listed only {got} item(s) but the "
+                    f"question refers to {want}. Re-read the ENTIRE context and list every "
+                    "distinct item as its own field."
+                )
+    return answer, found, structured

@@ -8,6 +8,10 @@ from app.retrieval.chat import (
     _parse_response,
 )
 
+# Captured at import time — conftest's autouse fixture swaps
+# app.routes.chat._memory_hits for its hermetic fake per-test.
+from app.routes.chat import _memory_hits as _real_memory_hits
+
 
 class TestChatParse:
     def test_valid_prose(self):
@@ -190,6 +194,134 @@ class TestMemoryClientSearch:
         doc_id = c.add_document("raw text", "t", {"kind": "raw"}, custom_id="nm-1-raw")
         assert doc_id == "doc1"
         assert sent["payload"]["customId"] == "nm-1-raw"
+
+
+class TestMemoryHitSelection:
+    """Regression for the "which are the 3 projects in my resume" failure:
+    a tiny header chunk outranked fact-bearing graph memories and the
+    per-capture slot cut dropped two of three projects from context."""
+
+    def _result(self, content, sim, kind, cid="90"):
+        return {
+            "content": content,
+            "kind": kind,
+            "metadata": {"capture_id": cid},
+            "similarity": sim,
+        }
+
+    def _pool(self):
+        # Mirrors the real store: header chunk wins on similarity, Glow Studio
+        # memories next, Cortex/Analytics just below the old slot cut.
+        return [
+            self._result("resume\nResume_D.pdf\n\n## Education\n\n## IIIT Nagpur", 0.64, "chunk"),
+            self._result("The user built Glow Studio, an AI-native CRM with FastAPI and LangGraph.", 0.56, "memory"),
+            self._result("The user deployed Glow Studio on Railway, Vercel, Supabase, and Upstash.", 0.56, "memory"),
+            self._result("The user built Cortex Research AI, an autonomous multi-agent research platform.", 0.54, "memory"),
+            self._result("The user built an AI-powered customer analytics platform using FastAPI.", 0.53, "memory"),
+        ]
+
+    def _run(self, query, results, monkeypatch):
+        from app.routes import chat as chat_route
+
+        fake_client = SimpleNamespace(search=lambda q, **kw: results)
+        monkeypatch.setattr(chat_route, "get_client", lambda: fake_client)
+        monkeypatch.setattr(chat_route, "_filter_memory_results", lambda r: r)
+        monkeypatch.setattr(chat_route, "_memory_hits", _real_memory_hits)
+        monkeypatch.setattr(
+            chat_route, "settings", SimpleNamespace(memory_enabled=True), raising=False
+        )
+        return chat_route._memory_hits(query)
+
+    def test_enumeration_query_surfaces_all_projects(self, monkeypatch):
+        hits = self._run("which are the 3 projects in my resume", self._pool(), monkeypatch)
+        text = " ".join(h["snippet"] for h in hits)
+        assert "Glow Studio" in text
+        assert "Cortex Research AI" in text
+        assert "customer analytics platform" in text
+
+    def test_tiny_header_chunk_demoted_not_leading(self, monkeypatch):
+        hits = self._run("which are the 3 projects in my resume", self._pool(), monkeypatch)
+        assert "## Education" not in hits[0]["snippet"]
+
+    def test_normal_query_keeps_default_slots(self, monkeypatch):
+        hits = self._run("tell me about my resume", self._pool(), monkeypatch)
+        assert len([h for h in hits if h["capture_id"] == 90]) <= 4
+
+    def test_wants_enumeration_detection(self):
+        from app.routes.chat import _wants_enumeration
+
+        assert _wants_enumeration("which are the 3 projects in my resume")
+        assert _wants_enumeration("how many projects are there in my resume")
+        assert _wants_enumeration("what are my skills")
+        assert _wants_enumeration("list my projects")
+        assert not _wants_enumeration("what is my pan number")
+        assert not _wants_enumeration("where do i study")
+
+    def test_document_scope_hits_reads_graph_directly(self, monkeypatch):
+        from app.routes import chat as chat_route
+
+        docs = [{"id": "docA", "metadata": {"capture_id": "90"}}]
+        mems = [
+            {"memory": "The user built Cortex Research AI.", "documentIds": ["docA"]},
+            {"memory": "Bluno offers a Product Intern role.", "documentIds": ["docB"]},
+            {"memory": "The user built an AI-powered customer analytics platform.", "documentIds": ["docA", "docX"]},
+            {"memory": "", "documentIds": ["docA"]},
+        ]
+        fake_client = SimpleNamespace(list_documents=lambda: docs, list_memories=lambda: mems)
+        monkeypatch.setattr(chat_route, "get_client", lambda: fake_client)
+        monkeypatch.setattr(chat_route, "_memory_grounded", lambda cid, text: True)
+        existing = [{"capture_id": 90, "snippet": "The user built Glow Studio, an AI-native CRM.", "similarity": 1.0}]
+        out = chat_route._document_scope_hits({"id": 90, "note": "resume"}, existing)
+        texts = " ".join(h["snippet"] for h in out)
+        assert "Cortex" in texts and "customer analytics" in texts
+        assert all(h["capture_id"] == 90 for h in out)
+        assert "Glow Studio" not in texts  # deduped against existing hits
+
+    def test_slot_sort_key_demotes_tiny_raw_chunks(self):
+        from app.routes.chat import _slot_sort_key
+
+        tiny = self._result("header only", 0.9, "chunk")
+        fact = self._result("real fact memory", 0.5, "memory")
+        big_chunk = self._result("x" * 400, 0.4, "chunk")
+        ordered = sorted([tiny, fact, big_chunk], key=_slot_sort_key)
+        assert [r["content"] for r in ordered] == [
+            "real fact memory",
+            "x" * 400,
+            "header only",
+        ]
+
+
+class TestDocumentPin:
+    def _matched(self, content="P" * 5000):
+        return {"id": 90, "content": content}
+
+    def test_absent_doc_gets_pinned(self):
+        from app.routes.chat import _apply_document_pin
+
+        out = _apply_document_pin([], self._matched())
+        assert out[0]["capture_id"] == 90
+        assert len(out[0]["snippet"]) == 4000
+
+    def test_sparse_representation_gets_pinned(self):
+        from app.routes.chat import _apply_document_pin
+
+        hits = [{"capture_id": 90, "snippet": "resume\nResume_D.pdf\n## Education", "similarity": 0.6}]
+        out = _apply_document_pin(hits, self._matched())
+        assert out[0]["similarity"] == 1.0
+        assert len(out[0]["snippet"]) == 4000
+        assert out[1] == hits[0]
+
+    def test_well_represented_doc_left_alone(self):
+        from app.routes.chat import _apply_document_pin
+
+        hits = [{"capture_id": 90, "snippet": "x" * 900, "similarity": 0.6}]
+        assert _apply_document_pin(hits, self._matched()) is hits
+
+    def test_no_match_noop(self):
+        from app.routes.chat import _apply_document_pin
+
+        hits = [{"capture_id": 91, "snippet": "y", "similarity": 0.5}]
+        assert _apply_document_pin(hits, None) is hits
 
 
 class TestMemoryHitGrounding:

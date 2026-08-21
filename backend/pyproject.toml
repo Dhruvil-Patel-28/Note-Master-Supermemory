@@ -27,4 +27,5 @@ pythonpath = ["."]
 markers = [
     "llm: runs real Ollama inference (chat answers, intent, note facts) — needs Ollama up and the configured models pulled",
     "memory: runs the live e2e battery against the local supermemory-server — run ONLY via scripts/run-memory-tests.sh (isolated nm_test container)",
+    "retrieval: retrieval-quality battery against the live user_main store (context assembly only, no model answers) — run via scripts/run-retrieval-tests.sh",
 ]

@@ -45,9 +45,11 @@ def memory_hits(monkeypatch, request):
     not-found path is exercised. Only matched captures are returned — an
     all-captures context made the 3b answer from noise.
 
-    @memory tests bypass this fake entirely — they exercise the real
-    _memory_hits against a live supermemory-server."""
-    if request.node.get_closest_marker("memory"):
+    @memory and @retrieval tests bypass this fake entirely — they exercise the
+    real _memory_hits against a live supermemory-server."""
+    if request.node.get_closest_marker("memory") or request.node.get_closest_marker(
+        "retrieval"
+    ):
         return
     import re
 

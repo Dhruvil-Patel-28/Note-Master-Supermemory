@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from .. import db
 from ..config import settings
 from ..memory.client import get_client
-from ..retrieval.chat import NOT_FOUND_ANSWER, grounded_answer, scrub_injection
+from ..retrieval.chat import NOT_FOUND_ANSWER, _wants_enumeration, grounded_answer, scrub_injection
 from ..retrieval.intent import REFUSAL_ANSWER, _USER_REFERENCE_RE, classify as classify_intent
 from ..schemas import (
     ChatRequest,
@@ -23,10 +23,21 @@ _SHOW_VERBS = {
     "see", "find", "bring", "give", "print", "read", "pull",
 }
 
-_MEMORY_LIMIT = 30
+_MEMORY_LIMIT = 40
 _MEMORY_TOP_CAPTURES = 5
-_MEMORY_CHUNKS_PER_CAPTURE = 3
-_CONTEXT_BUDGET = 14000
+_MEMORY_CHUNKS_PER_CAPTURE = 4
+# Enumeration questions ("which are the 3 projects", "how many courses") need
+# breadth — every matching fact — so they get expanded per-capture slots.
+_MEMORY_CHUNKS_PER_CAPTURE_ENUM = 6
+_CONTEXT_BUDGET = 16000
+# Raw chunks smaller than this are headers/dividers ("resume\nResume_D.pdf\n
+ # ## Education") — near-zero information, yet they outrank fact-bearing
+# results on label-word similarity. Demoted to the back of a capture's queue.
+_MIN_FULL_CHUNK_CHARS = 250
+# A label-matched document counts as "represented" only if this much of it
+# reached the context; below that, the pin injects fuller content.
+_SPARSE_REPRESENTATION_CHARS = 800
+_PIN_SNIPPET_CHARS = 4000
 # Honest not-found protection: supermemory ranks EVERY doc for any query
 # (threshold 0), so out-of-vocabulary questions ("do i own a zebra") would
 # drag unrelated chunks — including a high-tier PAN note — into the top-5 and
@@ -153,11 +164,18 @@ def _find_document(query: str, hits: list[dict]) -> ShowDocument | None:
     return best[2] if best else None
 
 
+def _slot_sort_key(r: dict) -> tuple[int, float]:
+    """Sort results within a capture's slot queue: fact-bearing results first
+    (by similarity), tiny raw chunks last regardless of similarity."""
+    tiny_raw = r.get("kind") == "chunk" and len(r.get("content", "")) < _MIN_FULL_CHUNK_CHARS
+    return (1 if tiny_raw else 0, -r.get("similarity", 0.0))
+
+
 def _memory_hits(query: str) -> list[dict]:
-    """Retrieve from supermemory: chunk hits grouped per capture (top chunks by
-    similarity), capped at the top captures, with a v1-style context budget so
-    duplicated uploads can't starve the LLM context. Disabled/unreachable
-    memory degrades to an empty hit list (honest not-found, no local stack).
+    """Retrieve from supermemory: chunk hits grouped per capture, capped at the
+    top captures, with a v1-style context budget so duplicated uploads can't
+    starve the LLM context. Disabled/unreachable memory degrades to an empty
+    hit list (honest not-found, no local stack).
 
     Memory nodes (the agent's graph memories) are deduped by text and grounded
     against the capture's stored content: a memory node that shares no
@@ -179,6 +197,11 @@ def _memory_hits(query: str) -> list[dict]:
         per_capture.setdefault(cid, []).append(r)
     if not per_capture:
         return []
+    slots = (
+        _MEMORY_CHUNKS_PER_CAPTURE_ENUM
+        if _wants_enumeration(query)
+        else _MEMORY_CHUNKS_PER_CAPTURE
+    )
     hits: list[dict] = []
     budget = _CONTEXT_BUDGET
     for cid in sorted(
@@ -186,7 +209,7 @@ def _memory_hits(query: str) -> list[dict]:
         key=lambda c: max(x["similarity"] for x in per_capture[c]),
         reverse=True,
     )[:_MEMORY_TOP_CAPTURES]:
-        for r in sorted(per_capture[cid], key=lambda x: -x["similarity"])[:_MEMORY_CHUNKS_PER_CAPTURE]:
+        for r in sorted(per_capture[cid], key=_slot_sort_key)[:slots]:
             if budget <= 0:
                 break
             hits.append({"capture_id": cid, "snippet": r["content"], "similarity": r["similarity"]})
@@ -232,14 +255,76 @@ def _memory_grounded(capture_id: int, text: str) -> bool:
     if not row or not row["content"]:
         return False
     mwords = {
-        w for w in re.findall(r"[a-z0-9]{3,}", text) if w not in _STOPWORDS
+        _stem(w) for w in re.findall(r"[a-z0-9]{3,}", text) if w not in _STOPWORDS
     }
     cwords = {
-        w
+        _stem(w)
         for w in re.findall(r"[a-z0-9]{3,}", row["content"].lower())
         if w not in _STOPWORDS
     }
     return bool(mwords & cwords)
+
+
+def _document_scope_hits(matched: dict, existing: list[dict]) -> list[dict]:
+    """Comprehensive fact retrieval for enumeration questions ("which are the
+    3 projects in my resume"). Search — hybrid or scoped — ranks globally by
+    query similarity, so a document's individual facts score mid-pack against
+    every other capture and fall below any slot cut. Instead of searching,
+    READ the document's graph memories directly: documents-list gives this
+    capture's doc ids, memories-list gives every node attached to them. No
+    ranking lottery; the content pin below stays as the fallback when the
+    graph is empty or unreachable."""
+    try:
+        client = get_client()
+        doc_ids = {
+            d["id"]
+            for d in client.list_documents()
+            if str((d.get("metadata") or {}).get("capture_id", "")) == str(matched["id"])
+        }
+        if not doc_ids:
+            return []
+        seen = {re.sub(r"\s+", " ", h["snippet"]).lower().strip() for h in existing}
+        used = sum(len(h["snippet"]) for h in existing)
+        room = max(0, _CONTEXT_BUDGET - used)
+        out: list[dict] = []
+        for m in client.list_memories():
+            if not (set(m.get("documentIds") or []) & doc_ids):
+                continue
+            text = (m.get("memory") or "").strip()
+            if not text:
+                continue
+            norm = re.sub(r"\s+", " ", text).lower().strip()
+            if norm in seen or len(text) > room:
+                continue
+            if not _memory_grounded(matched["id"], norm):
+                continue
+            seen.add(norm)
+            room -= len(text)
+            out.append({"capture_id": matched["id"], "snippet": text, "similarity": 0.6})
+        return out
+    except Exception:
+        return []
+
+
+def _apply_document_pin(hits: list[dict], matched: dict | None) -> list[dict]:
+    """Ranking luck must not decide how well a label-matched document is
+    represented. Presence alone isn't enough: a doc can make it into hits via
+    one tiny header chunk while its actual facts rank below the per-capture
+    slot cut (the "which are my projects" bug). If the matched document's
+    retrieved representation is sparse — or absent — prepend fuller content.
+    Well-represented documents are left untouched."""
+    if not matched:
+        return hits
+    retrieved = sum(len(h["snippet"]) for h in hits if h["capture_id"] == matched["id"])
+    if retrieved >= _SPARSE_REPRESENTATION_CHARS:
+        return hits
+    return [
+        {
+            "capture_id": matched["id"],
+            "snippet": (matched["content"] or "")[:_PIN_SNIPPET_CHARS],
+            "similarity": 1.0,
+        }
+    ] + hits
 
 
 _YES_NO_WORDS = {
@@ -247,6 +332,14 @@ _YES_NO_WORDS = {
     "right", "true", "false", "correct", "absolutely", "definitely", "dont",
     "cant", "wont", "im", "ive", "id",
 }
+
+
+def _stem(w: str) -> str:
+    """Trivial plural fold so grounding matches 'projects' against 'project'
+    (and vice versa) without letting genuine '-ss/-us' words collapse."""
+    if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
 
 
 def _grounded(query: str, answer: str, hits: list[dict]) -> bool:
@@ -268,12 +361,29 @@ def _grounded(query: str, answer: str, hits: list[dict]) -> bool:
     ):
         return True
     text = re.sub(r"\[\d+(?:\s*,\s*\d+)*\]", " ", answer).lower()
-    atokens = {w for w in re.findall(r"[a-z0-9]+", text) if len(w) >= 3 and w not in _STOPWORDS}
+    atokens = {_stem(w) for w in re.findall(r"[a-z0-9]+", text) if len(w) >= 3 and w not in _STOPWORDS}
     if not atokens:
         return False
     context = " ".join(h["snippet"] for h in hits).lower()
-    ctokens = {w for w in re.findall(r"[a-z0-9]+", context) if len(w) >= 3 and w not in _STOPWORDS}
+    ctokens = {_stem(w) for w in re.findall(r"[a-z0-9]+", context) if len(w) >= 3 and w not in _STOPWORDS}
     return bool(atokens & ctokens)
+
+
+def build_context(query: str) -> list[dict]:
+    """Everything the LLM will see for this question, assembled exactly as the
+    chat route does: hybrid search (chunks + graph nodes), then — for
+    enumeration questions about a label-matched document — that document's
+    graph memories read directly and prepended, then the sparse-representation
+    pin. Exposed as a single seam so the retrieval-quality suite tests the
+    real composition instead of re-implementing it."""
+    hits = _memory_hits(query)
+    matched = _match_document(query)
+    matched = dict(matched) if matched else None
+    if matched and _wants_enumeration(query):
+        # The named document's own facts LEAD the context — off-topic
+        # captures ranked mid-pack must not crowd or bury them.
+        hits = _document_scope_hits(matched, hits) + hits
+    return _apply_document_pin(hits, matched)
 
 
 @router.post("", response_model=ChatResponse)
@@ -305,20 +415,7 @@ def chat(payload: ChatRequest):
             sources=[],
         )
 
-    hits = _memory_hits(query)
-
-    # A content question that names a document by its labels ("what did i
-    # mention while applying to mumzworld") pins that document's content into
-    # the context — ranking luck must not decide which document the LLM reads.
-    matched = _match_document(query)
-    if matched and not any(h["capture_id"] == matched["id"] for h in hits):
-        hits = [
-            {
-                "capture_id": matched["id"],
-                "snippet": (matched["content"] or "")[:1000],
-                "similarity": 1.0,
-            }
-        ] + hits
+    hits = build_context(query)
 
     show_doc = _find_document(query, hits)
     if show_doc:
