@@ -50,6 +50,17 @@ function newMessageId(): string {
     : `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Retrieval returns per-chunk sources (up to 3 chunks per capture) — citations
+// should show each capture once.
+function dedupeSources(sources: ChatResponse["sources"]): ChatResponse["sources"] {
+  const seen = new Set<number>();
+  return sources.filter((s) => {
+    if (seen.has(s.capture_id)) return false;
+    seen.add(s.capture_id);
+    return true;
+  });
+}
+
 function SourceChip({
   s,
   hasFile,
@@ -172,11 +183,11 @@ function AssistantMessage({
         )}
         {m.sources && m.sources.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {m.sources.map((s, i) => {
+            {dedupeSources(m.sources).map((s) => {
               const cap = captures.find((c) => c.id === s.capture_id);
               return (
                 <SourceChip
-                  key={`${s.capture_id}-${i}`}
+                  key={s.capture_id}
                   s={s}
                   hasFile={cap?.type === "doc" && !!cap.raw_content_ref}
                   onClick={() => onSourceClick(s.capture_id)}
@@ -359,7 +370,7 @@ export default function ChatPane({
           if (!open) setFeedbackMsg(null);
         }}
         query={feedbackMsg?.query ?? ""}
-        captureIds={feedbackMsg?.sources?.map((s) => s.capture_id) ?? []}
+        captureIds={dedupeSources(feedbackMsg?.sources ?? []).map((s) => s.capture_id)}
       />
       {preview && <DocumentPreview doc={preview} onOpenChange={(o) => { if (!o) setPreview(null); }} />}
     </div>
