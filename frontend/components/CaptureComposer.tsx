@@ -129,6 +129,7 @@ export default function CaptureComposer({ onSent }: { onSent: () => void }) {
         ref={fileRef}
         type="file"
         hidden
+        accept=".txt,.md,.pdf,.epub,.docx,.xlsx,.csv,.json,.png,.jpg,.jpeg,.webp,.tiff,.bmp,.m4a,.webm,.wav,.mp3,.aiff,.ogg,.opus"
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) stageFile(f);

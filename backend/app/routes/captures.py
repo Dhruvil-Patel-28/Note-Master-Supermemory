@@ -12,6 +12,26 @@ from ..schemas import CaptureOut, CaptureUpdateIn, TextCaptureIn
 
 router = APIRouter(prefix="/captures", tags=["captures"])
 
+# Matches the Next.js dev-proxy cap (proxyClientMaxBodySize) — enforced here so
+# direct API calls get a clean 413 instead of an unbounded ingest.
+_MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+
+
+def _upload_size(file: UploadFile) -> int:
+    cur = file.file.tell()
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(cur)
+    return size
+
+
+def _reject_oversize(file: UploadFile) -> None:
+    if _upload_size(file) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file too large ({_upload_size(file)} bytes); limit is {_MAX_UPLOAD_BYTES} bytes",
+        )
+
 
 def _to_out(row) -> CaptureOut:
     return CaptureOut(
@@ -66,6 +86,7 @@ def create_file_capture(
     data = file.file.read(1)
     if not data:
         raise HTTPException(status_code=422, detail="empty file")
+    _reject_oversize(file)
     file.file.seek(0)
     rel = storage.save_upload(file.filename, file.file)
     capture_id = create_capture(
@@ -93,6 +114,7 @@ def create_audio_capture(background: BackgroundTasks, file: UploadFile = File(..
     data = file.file.read(1)
     if not data:
         raise HTTPException(status_code=422, detail="empty file")
+    _reject_oversize(file)
     file.file.seek(0)
     rel = storage.save_upload(file.filename, file.file)
     capture_id = create_capture("voice", raw_content_ref=rel, original_filename=file.filename)
@@ -217,6 +239,7 @@ def get_audio(capture_id: int):
 
 _FILE_MEDIA_TYPES = {
     ".pdf": "application/pdf",
+    ".epub": "application/epub+zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".txt": "text/plain",

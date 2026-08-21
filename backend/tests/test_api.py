@@ -436,6 +436,68 @@ def test_unsupported_file_rejected(client):
     assert r.status_code == 422
 
 
+def test_epub_upload_indexes(client, tmp_path, monkeypatch):
+    """EPUB is whitelisted and routes through Docling — stubbed here so the
+    route contract (accept → index → content) is tested without loading
+    layout models; real conversion is covered in test_units.TestEpubSupport."""
+    from types import SimpleNamespace
+
+    from app.config import settings
+    from conftest import make_tiny_epub
+    from app.ingestion import ocr as ocr_mod
+
+    class FakeDocument:
+        def export_to_markdown(self):
+            return "# Chapter 1\n\nThe user's favorite book is The Hobbit."
+
+    class FakeConverter:
+        def convert(self, p):
+            return SimpleNamespace(document=FakeDocument())
+
+    monkeypatch.setattr(ocr_mod, "_get_converter", lambda: FakeConverter())
+    object.__setattr__(settings, "docling_enabled", True)
+
+    epub = make_tiny_epub(tmp_path)
+    try:
+        with open(epub, "rb") as fh:
+            r = client.post("/captures/file", files={"file": ("book.epub", fh, "application/epub+zip")})
+        assert r.status_code == 200, r.text
+        cap = wait_indexed(client, r.json())
+        assert cap["status"] == "indexed", cap.get("error")
+        assert "Hobbit" in cap["content"]
+        # original file serves with the EPUB media type
+        r = client.get(f"/captures/{cap['id']}/file")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/epub+zip")
+    finally:
+        object.__setattr__(settings, "docling_enabled", False)
+
+
+def test_oversize_upload_rejected(client, tmp_path):
+    from conftest import make_tiny_epub  # noqa: F401  (sibling of this suite)
+    import app.routes.captures as capmod
+
+    small = tmp_path / "note.txt"
+    small.write_text("plain text note")
+    r = client.post(
+        "/captures/file",
+        files={"file": ("note.txt", small.read_bytes(), "text/plain")},
+    )
+    assert r.status_code == 200  # sanity: small file passes
+
+    # Simulate an over-cap upload without allocating 250MB: patch the size probe.
+    orig = capmod._upload_size
+    capmod._upload_size = lambda f: capmod._MAX_UPLOAD_BYTES + 1
+    try:
+        r = client.post(
+            "/captures/file",
+            files={"file": ("big.epub", b"PK\x03\x04", "application/epub+zip")},
+        )
+    finally:
+        capmod._upload_size = orig
+    assert r.status_code == 413
+
+
 def test_empty_text_rejected(client):
     assert client.post("/captures/text", json={"content": "   "}).status_code == 422
 

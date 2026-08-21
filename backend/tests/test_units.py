@@ -833,3 +833,59 @@ class TestDoclingRouting:
         finally:
             self._enable(False)
         assert "PAN" in out and "ABCDE1234F" in out
+
+
+class TestEpubSupport:
+    def _enable(self, value):
+        from app.config import settings
+
+        object.__setattr__(settings, "docling_enabled", value)
+
+    def test_epub_whitelisted_for_upload(self):
+        from app.ingestion.extractors import SUPPORTED_EXTENSIONS
+
+        assert ".epub" in SUPPORTED_EXTENSIONS
+
+    def test_enabled_epub_goes_through_docling(self, tmp_path, monkeypatch):
+        from conftest import make_tiny_epub
+        from app.ingestion import ocr
+
+        calls = []
+
+        class FakeDocument:
+            def export_to_markdown(self):
+                return "# Chapter 1\n\nThe user's favorite book is The Hobbit."
+
+        class FakeConverter:
+            def convert(self, p):
+                calls.append(p)
+                return SimpleNamespace(document=FakeDocument())
+
+        monkeypatch.setattr(ocr, "_get_converter", lambda: FakeConverter())
+        self._enable(True)
+        try:
+            out = ocr.extract_doc(make_tiny_epub(tmp_path))
+        finally:
+            self._enable(False)
+        assert len(calls) == 1
+        assert "Hobbit" in out
+
+    def test_epub_without_docling_fails_capture_clearly(self, tmp_path):
+        from app.ingestion.ocr import extract_doc
+        from conftest import make_tiny_epub
+
+        self._enable(False)
+        with pytest.raises(ValueError, match="DOCLING_ENABLED"):
+            extract_doc(make_tiny_epub(tmp_path))
+
+    def test_real_docling_epub_conversion(self, tmp_path):
+        """Real conversion of a minimal EPUB through the installed Docling."""
+        from app.ingestion.ocr import extract_doc
+        from conftest import make_tiny_epub
+
+        self._enable(True)
+        try:
+            out = extract_doc(make_tiny_epub(tmp_path))
+        finally:
+            self._enable(False)
+        assert "Hobbit" in out

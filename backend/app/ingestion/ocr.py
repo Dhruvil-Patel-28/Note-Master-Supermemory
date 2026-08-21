@@ -91,15 +91,27 @@ def _legacy_extract_pdf(path: Path) -> str:
     return extract_text(path)
 
 
+def _legacy_extract_epub(path: Path) -> str:
+    """EPUB without Docling has no extractor — fail the capture with a clear
+    error instead of silently producing garbage."""
+    raise ValueError("EPUB extraction requires Docling (DOCLING_ENABLED=1)")
+
+
 def extract_doc(path: Path) -> str:
     if is_image(path):
         return ocr_image(path)
-    if path.suffix.lower() == ".pdf":
+    ext = path.suffix.lower()
+    if ext in (".pdf", ".epub"):
         if settings.docling_enabled:
             try:
                 return docling_extract(path)
             except Exception as exc:
                 logger.warning("docling conversion failed for %s (%s) — legacy extractor", path.name, exc)
+                if ext == ".epub":
+                    raise
+                return _legacy_extract_pdf(path)
+        if ext == ".epub":
+            return _legacy_extract_epub(path)
         return _legacy_extract_pdf(path)
     return extract_text(path)
 
