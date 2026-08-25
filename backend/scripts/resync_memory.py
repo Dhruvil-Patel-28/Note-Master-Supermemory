@@ -42,14 +42,28 @@ def main() -> int:
         "free-tier token budgets; raise it for large documents",
     )
     parser.add_argument("--limit", type=int, default=0, help="only re-sync the first N captures (0 = all)")
+    parser.add_argument("--id", type=int, default=0, help="re-sync a single capture by id (overrides --limit)")
     args = parser.parse_args()
 
+    query = (
+        "SELECT id, original_filename, note FROM captures "
+        "WHERE is_latest = 1 AND memory_doc_ids IS NOT NULL AND memory_doc_ids != '' "
+        "ORDER BY id"
+    )
+    params: tuple = ()
+    if args.id:
+        query += " AND id = ?"
+        params = (args.id,)
     with db.get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, original_filename, note FROM captures "
-            "WHERE is_latest = 1 AND memory_doc_ids IS NOT NULL AND memory_doc_ids != '' "
-            "ORDER BY id"
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
+    if not rows and args.id:
+        # Capture exists but has no stored doc ids (interrupted first sync) —
+        # still sync it so orphan sweeps / graph coverage can recover.
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, original_filename, note FROM captures WHERE is_latest = 1 AND id = ?",
+                (args.id,),
+            ).fetchall()
     if args.limit:
         rows = rows[: args.limit]
 

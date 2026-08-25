@@ -22,6 +22,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ..config import settings
+from ..observability import get_prompt
 from . import context as ctx
 from .chat import _client
 
@@ -42,7 +43,7 @@ _GRADE_SCHEMA = {
     "required": ["sufficient", "missing_aspect", "suggested_query", "need_document_scope"],
 }
 
-_GRADE_SYSTEM = (
+_DEFAULT_GRADE_SYSTEM = (
     "You judge whether retrieved notes are enough to answer a question about "
     "the user's own documents and notes. Reply ONLY with JSON.\n"
     "sufficient=true when the facts clearly present let you answer the question.\n"
@@ -56,6 +57,7 @@ _GRADE_SYSTEM = (
     '"suggested_query": "Cortex customer analytics projects resume", '
     '"need_document_scope": true}'
 )
+_GRADE_SYSTEM = get_prompt("rag-grader", _DEFAULT_GRADE_SYSTEM)
 
 
 @dataclass

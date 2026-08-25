@@ -153,18 +153,26 @@ def chat(payload: ChatRequest):
     intent = classify_intent(query)
     intent_span.end(output={"intent": intent})
     if intent in ("code", "general"):
-        with db.get_conn() as conn:
-            conn.execute(
-                "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
-                (payload.query, "", 0),
+        # A "general" verdict that actually names one of your documents is a
+        # misclassification — questions about an uploaded book read like
+        # world-knowledge questions about a published work. A label match on
+        # a real capture overrides the verdict and proceeds to retrieval.
+        doc_match = _match_document(query)
+        if not (intent == "general" and doc_match):
+            with db.get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
+                    (payload.query, "", 0),
+                )
+            trace.update(output={"refusal": f"intent:{intent}"})
+            trace.score(name="found", value=0)
+            return ChatResponse(
+                answer=REFUSAL_ANSWER,
+                found=False,
+                sources=[],
             )
-        trace.update(output={"refusal": f"intent:{intent}"})
-        trace.score(name="found", value=0)
-        return ChatResponse(
-            answer=REFUSAL_ANSWER,
-            found=False,
-            sources=[],
-        )
+        ovr = trace.span(name="intent override", output={"general->notes": "label-matched document"})
+        ovr.end(output={"capture_id": doc_match["id"]})
 
     outcome = run_rag_agent(query, trace=trace)
     hits = outcome.hits

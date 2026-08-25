@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 import time
 
@@ -96,6 +97,34 @@ def _custom_id(capture_id: int, slot: str) -> str:
     return f"nm-{capture_id}-{slot}"
 
 
+# The lite server's memory agent feeds the model a bounded, beginning-biased
+# window of document text (~13.5K-token prompt budget). A novel-length
+# document (944K chars) therefore yielded only 3 opening-scene facts. Above
+# this threshold, sync splits the text into paragraph-boundary segments and
+# syncs each as its own raw doc — every segment gets a FULL agent run, so
+# graph coverage scales with book size. All segments share metadata
+# (capture_id) so scoped reads/hybrid hits treat them as one document.
+_SEGMENT_SYNC_MIN_CHARS = int(os.getenv("SYNC_SEGMENT_MIN_CHARS", "100000"))
+_SEGMENT_CHARS = int(os.getenv("SYNC_SEGMENT_CHARS", "80000"))
+
+
+def _segment_content(text: str) -> list[str]:
+    if len(text) <= _SEGMENT_SYNC_MIN_CHARS:
+        return [text]
+    parts: list[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + _SEGMENT_CHARS, n)
+        if end < n:
+            cut = text.rfind("\n\n", start + _SEGMENT_CHARS // 2, end)
+            if cut > start:
+                end = cut + 2
+        parts.append(text[start:end])
+        start = end
+    return parts
+
+
 def sync_capture(capture_id: int) -> None:
     """Push a capture into supermemory as one raw-content doc.
 
@@ -107,10 +136,13 @@ def sync_capture(capture_id: int) -> None:
         retrieval can cite sources (tiers are labels only — nothing is gated)
       - docs carry deterministic customIds (nm-{capture_id}-raw) so edits
         upsert in place instead of racing deletes against the ingester
-        (DELETE during processing returns 409)
-      - understanding is the server's job: its memory agent (Groq 70B or
-        local hermes3, see scripts/run-supermemory.sh) extracts the graph
-        memories from the raw content — no local fact extraction anymore
+        (DELETE during processing returns 409); documents above
+        SYNC_SEGMENT_MIN_CHARS are split into nm-{id}-raw-0..N segments so
+        each receives a full memory-agent pass (the agent reads only a bounded
+        window per call — one run on a whole novel captured ~3 opening facts)
+      - understanding is the server's job: its memory agent (Gemini or local,
+        see scripts/run-supermemory.sh) extracts graph memories — no local
+        fact extraction anymore
       - all best-effort: supermemory down = capture still indexes
     """
     if not settings.memory_enabled:
@@ -144,9 +176,15 @@ def sync_capture(capture_id: int) -> None:
             raw = _memory_text(row)
             doc_ids: list[str] = []
             if raw:
-                doc_id = client.add_document(raw, tag, meta, custom_id=_custom_id(capture_id, "raw"))
-                if doc_id:
-                    doc_ids.append(doc_id)
+                base_custom = _custom_id(capture_id, "raw")
+                segments = _segment_content(raw)
+                slots = [base_custom] if len(segments) == 1 else [
+                    f"{base_custom}-{i}" for i in range(len(segments))
+                ]
+                for custom_id, segment in zip(slots, segments):
+                    doc_id = client.add_document(segment, tag, meta, custom_id=custom_id)
+                    if doc_id:
+                        doc_ids.append(doc_id)
 
             if doc_ids:
                 with db.get_conn() as conn:

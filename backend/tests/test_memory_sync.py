@@ -151,3 +151,22 @@ def test_sync_is_noop_when_disabled():
     with db.get_conn() as conn:
         row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
     assert row["memory_doc_ids"] is None
+
+def test_sync_segments_large_content(monkeypatch):
+    """Novel-length content splits into nm-{id}-raw-0..N docs so each gets a
+    full memory-agent pass (the agent reads only a bounded window per call)."""
+    client = _enable_memory(monkeypatch)
+    big = ("Para one.\n\n" + "word " * 200) * 700  # ~1.5M chars -> ~19 segments of 80k
+    with db.get_conn() as conn:
+        conn.execute(
+            "INSERT INTO captures (type, content, sensitivity_tier, document_group_id, is_latest, version_number, status) "
+            "VALUES ('doc', ?, 'none', 60606, 1, 1, 'indexed')",
+            (big,),
+        )
+        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 60606").fetchone()[0]
+    memsync.sync_capture(cid)
+    ids = [i for i in client.docs if client.docs[i]["custom_id"].startswith(f"nm-{cid}-raw")]
+    assert len(ids) >= 5
+    customs = sorted(client.docs[i]["custom_id"] for i in ids)
+    assert customs[0] == f"nm-{cid}-raw-0"
+    assert all(client.docs[i]["metadata"]["capture_id"] == str(cid) for i in ids)

@@ -2,6 +2,7 @@ import json
 import re
 
 from ..config import settings
+from ..observability import get_prompt
 from .chat import _client
 
 REFUSAL_ANSWER = "I can only answer questions about your own notes and documents — I don't have general knowledge or coding abilities."
@@ -19,7 +20,7 @@ _CODE_HINTS = re.compile(
     re.IGNORECASE,
 )
 
-_CLASSIFIER_SYSTEM = (
+_CLASSIFIER_SYSTEM = get_prompt("intent-classifier", (
     "You classify a user's question into exactly one intent. Reply ONLY with JSON: "
     '{"intent": "<one of notes|code|general|hybrid|unknown>"}.\n'
     "notes = about the user's own life, notes or documents: their name, institute, courses, PAN, "
@@ -44,7 +45,10 @@ _CLASSIFIER_SYSTEM = (
     'Example: "what is 2+2" -> {"intent": "general"}\n'
     'Example: "what python skills do i have" -> {"intent": "hybrid"}\n'
     'Example: "asdfgh" -> {"intent": "unknown"}\n'
-)
+    'Example: "what is the mummy a tale of" -> {"intent": "notes"}\n'
+    'Example: "what happens in the book i uploaded" -> {"intent": "notes"}\n'
+    'Example: "summarize my pdf" -> {"intent": "notes"}\n'
+))
 
 # Safety net, not a primary: a "general" answer that still concerns the user
 # ("where do i X", "my Y") must not refuse the notes path. Code hints win.

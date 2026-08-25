@@ -81,3 +81,27 @@ class Tracer:
 
 
 tracer = Tracer()
+
+
+def get_prompt(name: str, fallback: str) -> str:
+    """Fetch a prompt from Langfuse Prompt Management by name.
+
+    Primary source is the Langfuse UI (Prompts tab) — edit there and the
+    change takes effect after the cache TTL. The `fallback` string in the
+    codebase serves ONLY as bootstrap default when Langfuse is down, keys
+    are missing, or the prompt hasn't been created yet. Results are cached
+    for PROMPT_CACHE_TTL seconds so retrieval isn't hit on every request."""
+    tracer._init()
+    if not tracer.enabled:
+        return fallback
+    try:
+        prompt_obj = tracer._lf.get_prompt(name, cache_ttl_seconds=_PROMPT_CACHE_TTL)
+        text = prompt_obj.prompt
+        if text and text.strip():
+            return text
+    except Exception:
+        pass
+    return fallback
+
+
+_PROMPT_CACHE_TTL = int(os.getenv("PROMPT_CACHE_TTL", "300"))
