@@ -213,7 +213,9 @@ def chat(payload: ChatRequest):
     trace.update(output={"answer": answer[:200], "found": found})
     trace.score(name="found", value=1 if found else 0)
     trace.score(name="rounds_used", value=len(outcome.rounds))
-    trace.score(name="grounded_pass", value=1 if (found or not hits) else 0)
+    # grounded_pass=1 whenever nothing ungrounded reached the user — an
+    # honest not-found IS the guardrail succeeding.
+    trace.score(name="grounded_pass", value=1 if not (found and not _grounded(query, answer, hits)) else 0)
     tracer.flush()
 
     return ChatResponse(
