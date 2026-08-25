@@ -149,7 +149,14 @@ def _memory_hits(query: str) -> list[dict]:
         for r in sorted(per_capture[cid], key=_slot_sort_key)[:slots]:
             if budget <= 0:
                 break
-            hits.append({"capture_id": cid, "snippet": r["content"], "similarity": r["similarity"]})
+            hits.append({
+                "capture_id": cid,
+                "snippet": r["content"],
+                "similarity": r["similarity"],
+                # Provenance: raw-text chunks vs the agent's graph fact nodes —
+                # both arrive mixed in one hybrid search response.
+                "source": "hybrid-chunk" if r.get("kind") == "chunk" else "graph-memory",
+            })
             budget -= len(r["content"])
         if budget <= 0:
             break
@@ -245,7 +252,7 @@ def _document_scope_hits(matched: dict, existing: list[dict]) -> list[dict]:
                 continue
             seen.add(norm)
             room -= len(text)
-            out.append({"capture_id": matched["id"], "snippet": text, "similarity": 0.6})
+            out.append({"capture_id": matched["id"], "snippet": text, "similarity": 0.6, "source": "scoped-graph"})
         return out
     except Exception:
         return []
@@ -268,6 +275,7 @@ def _apply_document_pin(hits: list[dict], matched: dict | None) -> list[dict]:
             "capture_id": matched["id"],
             "snippet": (matched["content"] or "")[:_PIN_SNIPPET_CHARS],
             "similarity": 1.0,
+            "source": "pin",
         }
     ] + hits
 

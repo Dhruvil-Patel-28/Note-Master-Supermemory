@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from app.retrieval import agent as agent_mod
 
 
-def _hit(cid, text, sim=0.5):
-    return {"capture_id": cid, "snippet": text, "similarity": sim}
+def _hit(cid, text, sim=0.5, source="graph-memory"):
+    return {"capture_id": cid, "snippet": text, "similarity": sim, "source": source}
 
 
 class FakeGrader:
@@ -69,6 +69,55 @@ def test_insufficient_refines_then_answers(base_env, monkeypatch):
     assert len(out.rounds) == 2
     text = " ".join(h["snippet"] for h in out.hits)
     assert "Glow Studio" in text and "Cortex" in text and "customer analytics" in text
+
+
+class RecordingTrace:
+    """Captures span calls so tests can assert on Langfuse-bound outputs."""
+
+    def __init__(self):
+        self.spans = []
+
+    def span(self, name=None, input=None, output=None, metadata=None, **kw):
+        rec = {"name": name, "input": input, "output": output}
+        self.spans.append(rec)
+
+        class _S:
+            def end(self, output=None):
+                rec["output"] = output
+
+        return _S()
+
+
+def test_span_reports_per_source_breakdown(base_env, monkeypatch):
+    """Retrieval spans must expose new/pool hit counts broken down by
+    source (hybrid-chunk / graph-memory / scoped-graph / pin)."""
+    base_env._memory_hits = lambda q: (
+        [_hit(90, "The user built Glow Studio.", source="hybrid-chunk")]
+        if "glow" in q.lower() or "projects" in q.lower()
+        else [
+            _hit(90, "The user built Cortex Research AI.", source="scoped-graph"),
+            _hit(90, "The user built an AI-powered customer analytics platform.", source="graph-memory"),
+        ]
+    )
+    monkeypatch.setattr(
+        agent_mod, "_grade",
+        FakeGrader(
+            {"sufficient": False, "missing_aspect": "more projects",
+             "suggested_query": "cortex customer analytics", "need_document_scope": False},
+            {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False},
+        ),
+    )
+    trace = RecordingTrace()
+    out = agent_mod.run_rag_agent("which are my projects", trace=trace)
+
+    r_spans = [s for s in trace.spans if s["name"].startswith("retrieval round")]
+    assert len(r_spans) == 2
+    first_out = r_spans[0]["output"]
+    assert first_out["new_by_source"] == {"hybrid-chunk": 1}
+    second_out = r_spans[1]["output"]
+    assert second_out["new_by_source"] == {"scoped-graph": 1, "graph-memory": 1}
+    pool_bd = second_out["pool_by_source"]
+    assert pool_bd["hybrid-chunk"] == 1 and pool_bd["graph-memory"] >= 1
 
 
 def test_max_rounds_held(base_env, monkeypatch):

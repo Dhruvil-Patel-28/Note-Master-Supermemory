@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ..config import settings
@@ -108,6 +109,12 @@ def _grade(query: str, pool: list[dict]) -> dict:
     return {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False}
 
 
+def _breakdown(hits: list[dict]) -> dict:
+    """Per-source hit counts (hybrid-chunk / graph-memory / scoped-graph /
+    pin) — surfaced in Langfuse retrieval spans."""
+    return dict(Counter(h.get("source", "unknown") for h in hits))
+
+
 def run_rag_agent(query: str, trace=None) -> AgentOutcome:
     """Iterative retrieve→merge→grade→decide over the production retrieval
     primitives. Round 1 reproduces the exact single-shot baseline
@@ -126,9 +133,9 @@ def run_rag_agent(query: str, trace=None) -> AgentOutcome:
     pool: list[dict] = []
     seen: set[str] = set()
 
-    def merge(hits: list[dict]) -> int:
-        """Add fresh, in-budget hits to the pool. Returns count added."""
-        added = 0
+    def merge(hits: list[dict]) -> list[dict]:
+        """Add fresh, in-budget hits to the pool. Returns the hits added."""
+        added: list[dict] = []
         used = sum(len(h["snippet"]) for h in pool)
         for h in hits:
             key = _norm(h["snippet"])
@@ -137,7 +144,7 @@ def run_rag_agent(query: str, trace=None) -> AgentOutcome:
             seen.add(key)
             used += len(h["snippet"])
             pool.append(h)
-            added += 1
+            added.append(h)
         return added
 
     def _room(used: int) -> int:
@@ -164,8 +171,10 @@ def run_rag_agent(query: str, trace=None) -> AgentOutcome:
         outcome.rounds.append(AgentRound(sub_query, added, len(pool)))
         if sp:
             sp.end(output={
-                "new_hits": added,
+                "new_hits": len(added),
+                "new_by_source": _breakdown(added),
                 "pool_size": len(pool),
+                "pool_by_source": _breakdown(pool),
                 "top_similarities": [round(h["similarity"], 2) for h in pool[:6]],
                 "capture_ids": sorted({h["capture_id"] for h in pool}),
             })
@@ -191,8 +200,9 @@ def run_rag_agent(query: str, trace=None) -> AgentOutcome:
     if matched and not pool:
         # Nothing anywhere — still give the sparse-pin fallback its shot so
         # labeled documents surface even when search/graph both come up empty.
-        pool.extend(ctx._apply_document_pin([], dict(matched)))
-        outcome.rounds.append(AgentRound("pin fallback", len(pool), len(pool)))
+        pinned = ctx._apply_document_pin([], dict(matched))
+        pool.extend(pinned)
+        outcome.rounds.append(AgentRound("pin fallback", len(pinned), len(pool)))
 
     outcome.forced_scope = forced_scope
     outcome.hits = ctx._apply_document_pin(pool, matched)

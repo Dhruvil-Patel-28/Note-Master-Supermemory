@@ -324,6 +324,47 @@ class TestDocumentPin:
         assert _apply_document_pin(hits, None) is hits
 
 
+class TestSourceTagging:
+    """Every pool hit carries provenance so Langfuse spans can break down
+    retrieval per source (hybrid-chunk / graph-memory / scoped-graph / pin)."""
+
+    def test_hybrid_hits_tagged_by_kind(self, monkeypatch):
+        from app.retrieval import context as chat_route
+
+        results = [
+            {"content": "The user built Cortex Research AI.", "kind": "memory",
+             "metadata": {"capture_id": "90"}, "similarity": 0.6},
+            {"content": "## Glow Studio - AI-Native CRM | github", "kind": "chunk",
+             "metadata": {"capture_id": "90"}, "similarity": 0.55},
+        ]
+        fake_client = SimpleNamespace(search=lambda q, **kw: results)
+        monkeypatch.setattr(chat_route, "get_client", lambda: fake_client)
+        monkeypatch.setattr(chat_route, "_filter_memory_results", lambda r: r)
+        monkeypatch.setattr(
+            chat_route, "settings", SimpleNamespace(memory_enabled=True), raising=False
+        )
+        monkeypatch.setattr(chat_route, "_memory_hits", _real_memory_hits)
+        out = chat_route._memory_hits("my projects")
+        assert {h["source"] for h in out} == {"graph-memory", "hybrid-chunk"}
+
+    def test_scoped_read_tagged_scoped_graph(self, monkeypatch):
+        from app.retrieval import context as chat_route
+
+        docs = [{"id": "docA", "metadata": {"capture_id": "90"}}]
+        mems = [{"memory": "The user built Cortex Research AI.", "documentIds": ["docA"]}]
+        fake_client = SimpleNamespace(list_documents=lambda: docs, list_memories=lambda: mems)
+        monkeypatch.setattr(chat_route, "get_client", lambda: fake_client)
+        monkeypatch.setattr(chat_route, "_memory_grounded", lambda cid, text: True)
+        out = chat_route._document_scope_hits({"id": 90}, [])
+        assert all(h["source"] == "scoped-graph" for h in out)
+
+    def test_pin_tagged_pin(self):
+        from app.retrieval.context import _apply_document_pin
+
+        out = _apply_document_pin([], {"id": 7, "content": "x" * 100})
+        assert out[0]["source"] == "pin"
+
+
 class TestMemoryHitGrounding:
     def test_dedupes_identical_memory_texts(self):
         from app.retrieval import context as chat_route
