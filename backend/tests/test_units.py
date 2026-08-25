@@ -10,7 +10,7 @@ from app.retrieval.chat import (
 
 # Captured at import time — conftest's autouse fixture swaps
 # app.routes.chat._memory_hits for its hermetic fake per-test.
-from app.routes.chat import _memory_hits as _real_memory_hits
+from app.retrieval.context import _memory_hits as _real_memory_hits
 
 
 class TestChatParse:
@@ -221,7 +221,7 @@ class TestMemoryHitSelection:
         ]
 
     def _run(self, query, results, monkeypatch):
-        from app.routes import chat as chat_route
+        from app.retrieval import context as chat_route
 
         fake_client = SimpleNamespace(search=lambda q, **kw: results)
         monkeypatch.setattr(chat_route, "get_client", lambda: fake_client)
@@ -248,7 +248,7 @@ class TestMemoryHitSelection:
         assert len([h for h in hits if h["capture_id"] == 90]) <= 4
 
     def test_wants_enumeration_detection(self):
-        from app.routes.chat import _wants_enumeration
+        from app.retrieval.context import _wants_enumeration
 
         assert _wants_enumeration("which are the 3 projects in my resume")
         assert _wants_enumeration("how many projects are there in my resume")
@@ -258,7 +258,7 @@ class TestMemoryHitSelection:
         assert not _wants_enumeration("where do i study")
 
     def test_document_scope_hits_reads_graph_directly(self, monkeypatch):
-        from app.routes import chat as chat_route
+        from app.retrieval import context as chat_route
 
         docs = [{"id": "docA", "metadata": {"capture_id": "90"}}]
         mems = [
@@ -278,7 +278,7 @@ class TestMemoryHitSelection:
         assert "Glow Studio" not in texts  # deduped against existing hits
 
     def test_slot_sort_key_demotes_tiny_raw_chunks(self):
-        from app.routes.chat import _slot_sort_key
+        from app.retrieval.context import _slot_sort_key
 
         tiny = self._result("header only", 0.9, "chunk")
         fact = self._result("real fact memory", 0.5, "memory")
@@ -296,14 +296,14 @@ class TestDocumentPin:
         return {"id": 90, "content": content}
 
     def test_absent_doc_gets_pinned(self):
-        from app.routes.chat import _apply_document_pin
+        from app.retrieval.context import _apply_document_pin
 
         out = _apply_document_pin([], self._matched())
         assert out[0]["capture_id"] == 90
         assert len(out[0]["snippet"]) == 4000
 
     def test_sparse_representation_gets_pinned(self):
-        from app.routes.chat import _apply_document_pin
+        from app.retrieval.context import _apply_document_pin
 
         hits = [{"capture_id": 90, "snippet": "resume\nResume_D.pdf\n## Education", "similarity": 0.6}]
         out = _apply_document_pin(hits, self._matched())
@@ -312,13 +312,13 @@ class TestDocumentPin:
         assert out[1] == hits[0]
 
     def test_well_represented_doc_left_alone(self):
-        from app.routes.chat import _apply_document_pin
+        from app.retrieval.context import _apply_document_pin
 
         hits = [{"capture_id": 90, "snippet": "x" * 900, "similarity": 0.6}]
         assert _apply_document_pin(hits, self._matched()) is hits
 
     def test_no_match_noop(self):
-        from app.routes.chat import _apply_document_pin
+        from app.retrieval.context import _apply_document_pin
 
         hits = [{"capture_id": 91, "snippet": "y", "similarity": 0.5}]
         assert _apply_document_pin(hits, None) is hits
@@ -326,7 +326,7 @@ class TestDocumentPin:
 
 class TestMemoryHitGrounding:
     def test_dedupes_identical_memory_texts(self):
-        from app.routes import chat as chat_route
+        from app.retrieval import context as chat_route
 
         monkeypatch = None  # placeholder to keep signature simple
         results = [
@@ -362,7 +362,7 @@ class TestMemoryHitGrounding:
         ]
 
     def test_drops_cross_attached_memory_nodes(self):
-        from app.routes import chat as chat_route
+        from app.retrieval import context as chat_route
 
         results = [
             {
@@ -381,7 +381,7 @@ class TestMemoryHitGrounding:
         assert out == []
 
     def test_keeps_memory_when_grounded_and_chunk_always(self):
-        from app.routes import chat as chat_route
+        from app.retrieval import context as chat_route
 
         results = [
             {
@@ -407,7 +407,7 @@ class TestMemoryHitGrounding:
 
     def test_memory_grounded_checks_capture_content(self, db):
         from app.db import init_db
-        from app.routes import chat as chat_route
+        from app.retrieval import context as chat_route
 
         init_db()
 

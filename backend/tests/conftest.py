@@ -84,7 +84,7 @@ def memory_hits(monkeypatch, request):
     import re
 
     from app.db import get_conn
-    from app.routes import chat as chat_route
+    from app.retrieval import context as ctx
 
     ACADEMIC = {
         "semester", "sem", "credit", "credits", "cgpa", "gpa", "grade",
@@ -122,5 +122,5 @@ def memory_hits(monkeypatch, request):
                 hits.append({"capture_id": cid, "snippet": snippet[:600], "similarity": 0.5})
         return hits
 
-    monkeypatch.setattr(chat_route, "_memory_hits", fake)
+    monkeypatch.setattr(ctx, "_memory_hits", fake)
     return fake

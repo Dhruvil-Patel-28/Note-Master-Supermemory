@@ -112,6 +112,18 @@ Env-driven, read at import time (`backend/app/config.py`) plus the launcher scri
 
 Default `gemini-3.5-flash-lite`: ~15 req/min, ~1K req/day, ~250K tokens/min. Two things make Gemini work where Groq's free tier cannot: per-minute token headroom (the agent sends a fixed ~13.8K-token prompt per call, over Groq's 8K TPM cap on every free model), and per-model daily buckets — the newest flagships get starved limits for new keys (`gemini-3.6-flash` = only 20 req/day), while Flash-Lite carries ~1K/day. A bulk re-sync may still span days; `backend/scripts/resync_memory.py --delay 5` is throttled and idempotent, so re-run as needed. Quota exhaustion shows up as docs stuck `indexing`; flip `SUPERMEMORY_PROVIDER=ollama` to keep working offline.
 
+## Observability
+
+Self-hosted Langfuse traces every chat question: intent, each agentic retrieval round (sub-queries, hits, similarities), grader verdicts, and the final generation.
+
+```bash
+bash scripts/run-langfuse.sh up     # UI at http://localhost:3001
+# sign up -> Settings -> API Keys -> then before starting the backend:
+export LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+Tracing is a no-op without keys. The agent loop itself: `RAG_MAX_ROUNDS=3` (default), grader model `RAG_AGENT_MODEL=hermes3`, disable entirely with `RAG_AGENTIC=0`.
+
 ## Maintenance
 
 From `backend/scripts/`:

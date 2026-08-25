@@ -4,6 +4,7 @@ import re
 import ollama
 
 from ..config import settings
+from .context import _wants_enumeration  # noqa: F401  (re-exported for routes)
 
 NOT_FOUND_ANSWER = "I don't have this in my notes."
 
@@ -70,19 +71,6 @@ _ANSWER_SCHEMA = {
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
-
-
-_ENUM_INTENT_RE = re.compile(
-    r"\bhow\s+many\b|\blist\b|\ball\s+(?:my|the|of)\b|\benumerate\b"
-    r"|\b(?:which|what)\s+are\b",
-    re.IGNORECASE,
-)
-
-
-def _wants_enumeration(query: str) -> bool:
-    """Listing questions ("which are the 3 projects", "how many courses") need
-    every matching fact in context and a complete fields card."""
-    return bool(_ENUM_INTENT_RE.search(query))
 
 
 def _filter_fields(fields: list[dict], context: str) -> list[dict]:

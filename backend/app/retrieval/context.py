@@ -1,0 +1,290 @@
+"""Retrieval core: everything that assembles LLM context from supermemory.
+
+Extracted from routes/chat.py so the HTTP layer keeps only guardrails and
+transport concerns, and so the agentic loop (retrieval.agent) can compose
+these primitives directly. Behavior is identical to the pre-extraction code.
+"""
+import re
+
+from .. import db
+from ..config import settings
+from ..memory.client import get_client
+
+_MEMORY_LIMIT = 40
+_MEMORY_TOP_CAPTURES = 5
+_MEMORY_CHUNKS_PER_CAPTURE = 4
+# Enumeration questions ("which are the 3 projects", "how many courses") need
+# breadth — every matching fact — so they get expanded per-capture slots.
+_MEMORY_CHUNKS_PER_CAPTURE_ENUM = 6
+_CONTEXT_BUDGET = 16000
+# Raw chunks smaller than this are headers/dividers ("resume\nResume_D.pdf\n
+ # ## Education") — near-zero information, yet they outrank fact-bearing
+# results on label-word similarity. Demoted to the back of a capture's queue.
+_MIN_FULL_CHUNK_CHARS = 250
+# A label-matched document counts as "represented" only if this much of it
+# reached the context; below that, the pin injects fuller content.
+_SPARSE_REPRESENTATION_CHARS = 800
+_PIN_SNIPPET_CHARS = 4000
+# Honest not-found protection: supermemory ranks EVERY doc for any query
+# (threshold 0), so out-of-vocabulary questions ("do i own a zebra") would
+# drag unrelated chunks — including a high-tier PAN note — into the top-5 and
+# gate an innocent query. The floor is set below the observed relevant band.
+MIN_MEMORY_SIMILARITY = 0.45
+
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+    "he", "i", "in", "is", "it", "its", "me", "much", "my", "of", "on",
+    "or", "that", "the", "this", "to", "was", "we", "were", "what", "will",
+    "with", "you", "your",
+    "about", "any", "can", "could", "did", "do", "does", "get", "going",
+    "here", "how", "just", "know", "like", "please", "say", "said", "should",
+    "show", "tell", "there", "want", "when", "where", "which", "who", "why",
+    "would",
+}
+
+
+def _query_words(query: str) -> set[str]:
+    return {
+        w.replace("aadhaar", "aadhar")
+        for w in re.findall(r"[a-z]+", query.lower())
+        if w not in _STOPWORDS and len(w) >= 2
+    }
+
+
+def _label_score(qwords: set[str], raw_labels: str) -> int:
+    """Word overlap between the query's content words and a doc's labels.
+    Compound label tokens are split implicitly: "cover letter" matches
+    "coverletter" via substring, "aadhar card" matches "aadhar_card.jpg"."""
+    tokens = re.sub(r"[^a-z0-9]+", " ", raw_labels.lower().replace("aadhaar", "aadhar")).split()
+    score = len(qwords & set(tokens))
+    if score == 0:
+        score = sum(any(w in t for t in tokens) for w in qwords)
+    return score
+
+
+def _match_document(query: str) -> dict | None:
+    """Best latest capture whose labels (filename/note) overlap the query's
+    content words — the labels ARE the vocabulary, no noun list. Unlike
+    show-document intent this needs no show-verb: a content question that
+    names a document must draw on that document even when semantic ranking
+    surfaces other captures. Ties fall to the newest upload."""
+    qwords = _query_words(query)
+    if not qwords:
+        return None
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, content, original_filename, note FROM captures WHERE is_latest = 1"
+        ).fetchall()
+    best: dict | None = None
+    best_score = 0
+    for row in rows:
+        labels = f"{row['original_filename'] or ''} {row['note'] or ''}"
+        score = _label_score(qwords, labels)
+        if score < 1:
+            continue
+        if best is None or score > best_score or (score == best_score and row["id"] > best["id"]):
+            best = row
+            best_score = score
+    return best
+
+
+_ENUM_INTENT_RE = re.compile(
+    r"\bhow\s+many\b|\blist\b|\ball\s+(?:my|the|of)\b|\benumerate\b"
+    r"|\b(?:which|what)\s+are\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_enumeration(query: str) -> bool:
+    """Listing questions ("which are the 3 projects", "how many courses") need
+    breadth — every matching fact — so they get expanded per-capture slots."""
+    return bool(_ENUM_INTENT_RE.search(query))
+
+
+def _slot_sort_key(r: dict) -> tuple[int, float]:
+    """Sort results within a capture's slot queue: fact-bearing results first
+    (by similarity), tiny raw chunks last regardless of similarity."""
+    tiny_raw = r.get("kind") == "chunk" and len(r.get("content", "")) < _MIN_FULL_CHUNK_CHARS
+    return (1 if tiny_raw else 0, -r.get("similarity", 0.0))
+
+
+def _memory_hits(query: str) -> list[dict]:
+    """Retrieve from supermemory: chunk hits grouped per capture, capped at the
+    top captures, with a v1-style context budget so duplicated uploads can't
+    starve the LLM context. Disabled/unreachable memory degrades to an empty
+    hit list (honest not-found, no local stack).
+
+    Memory nodes (the agent's graph memories) are deduped by text and grounded
+    against the capture's stored content: a memory node that shares no
+    substantive token with its capture's real content is cross-attached junk
+    (the agent mirrors other docs' content into unrelated fact docs) and is
+    dropped."""
+    if not settings.memory_enabled:
+        return []
+    try:
+        results = get_client().search(query, limit=_MEMORY_LIMIT, threshold=0.0)
+    except Exception:
+        return []
+    per_capture: dict[int, list[dict]] = {}
+    for r in _filter_memory_results(results):
+        try:
+            cid = int(r["metadata"].get("capture_id", ""))
+        except (TypeError, ValueError):
+            continue
+        per_capture.setdefault(cid, []).append(r)
+    if not per_capture:
+        return []
+    slots = (
+        _MEMORY_CHUNKS_PER_CAPTURE_ENUM
+        if _wants_enumeration(query)
+        else _MEMORY_CHUNKS_PER_CAPTURE
+    )
+    hits: list[dict] = []
+    budget = _CONTEXT_BUDGET
+    for cid in sorted(
+        per_capture,
+        key=lambda c: max(x["similarity"] for x in per_capture[c]),
+        reverse=True,
+    )[:_MEMORY_TOP_CAPTURES]:
+        for r in sorted(per_capture[cid], key=_slot_sort_key)[:slots]:
+            if budget <= 0:
+                break
+            hits.append({"capture_id": cid, "snippet": r["content"], "similarity": r["similarity"]})
+            budget -= len(r["content"])
+        if budget <= 0:
+            break
+    return hits
+
+
+def _filter_memory_results(results: list[dict]) -> list[dict]:
+    """Dedupe results by normalized text and drop cross-attached memory nodes
+    (the agent mirrors other docs' content into unrelated fact docs — e.g. the
+    transcript's course memory copied onto a "buy batteries" note). Keeps the
+    first result per text; memory-kind results are grounded against their
+    capture's real content; chunk results are real content and always pass."""
+    seen_texts: set[str] = set()
+    out: list[dict] = []
+    for r in results:
+        if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
+            continue
+        text = re.sub(r"\s+", " ", r["content"]).lower().strip()
+        if text in seen_texts:
+            continue
+        seen_texts.add(text)
+        if r.get("kind") == "memory" and not _memory_grounded(int(r["metadata"].get("capture_id", 0) or 0), text):
+            continue
+        out.append(r)
+    return out
+
+
+def _stem(w: str) -> str:
+    """Trivial plural fold so grounding matches 'projects' against 'project'
+    (and vice versa) without letting genuine '-ss/-us' words collapse."""
+    if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
+
+
+def _memory_grounded(capture_id: int, text: str) -> bool:
+    """True if a memory node's text shares at least one substantive token with
+    the capture's stored content. Cross-attached agent memories (transcript
+    facts mirrored onto "buy batteries" notes) share nothing and are dropped;
+    genuine paraphrases of the capture share tokens."""
+    try:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT content FROM captures WHERE id = ?", (capture_id,)
+            ).fetchone()
+    except Exception:
+        return True
+    if not row or not row["content"]:
+        return False
+    mwords = {
+        _stem(w) for w in re.findall(r"[a-z0-9]{3,}", text) if w not in _STOPWORDS
+    }
+    cwords = {
+        _stem(w)
+        for w in re.findall(r"[a-z0-9]{3,}", row["content"].lower())
+        if w not in _STOPWORDS
+    }
+    return bool(mwords & cwords)
+
+
+def _document_scope_hits(matched: dict, existing: list[dict]) -> list[dict]:
+    """Comprehensive fact retrieval for enumeration questions ("which are the
+    3 projects in my resume"). Search — hybrid or scoped — ranks globally by
+    query similarity, so a document's individual facts score mid-pack against
+    every other capture and fall below any slot cut. Instead of searching,
+    READ the document's graph memories directly: documents-list gives this
+    capture's doc ids, memories-list gives every node attached to them. No
+    ranking lottery; the content pin below stays as the fallback when the
+    graph is empty or unreachable."""
+    try:
+        client = get_client()
+        doc_ids = {
+            d["id"]
+            for d in client.list_documents()
+            if str((d.get("metadata") or {}).get("capture_id", "")) == str(matched["id"])
+        }
+        if not doc_ids:
+            return []
+        seen = {re.sub(r"\s+", " ", h["snippet"]).lower().strip() for h in existing}
+        used = sum(len(h["snippet"]) for h in existing)
+        room = max(0, _CONTEXT_BUDGET - used)
+        out: list[dict] = []
+        for m in client.list_memories():
+            if not (set(m.get("documentIds") or []) & doc_ids):
+                continue
+            text = (m.get("memory") or "").strip()
+            if not text:
+                continue
+            norm = re.sub(r"\s+", " ", text).lower().strip()
+            if norm in seen or len(text) > room:
+                continue
+            if not _memory_grounded(matched["id"], norm):
+                continue
+            seen.add(norm)
+            room -= len(text)
+            out.append({"capture_id": matched["id"], "snippet": text, "similarity": 0.6})
+        return out
+    except Exception:
+        return []
+
+
+def _apply_document_pin(hits: list[dict], matched: dict | None) -> list[dict]:
+    """Ranking luck must not decide how well a label-matched document is
+    represented. Presence alone isn't enough: a doc can make it into hits via
+    one tiny header chunk while its actual facts rank below the per-capture
+    slot cut (the "which are my projects" bug). If the matched document's
+    retrieved representation is sparse — or absent — prepend fuller content.
+    Well-represented documents are left untouched."""
+    if not matched:
+        return hits
+    retrieved = sum(len(h["snippet"]) for h in hits if h["capture_id"] == matched["id"])
+    if retrieved >= _SPARSE_REPRESENTATION_CHARS:
+        return hits
+    return [
+        {
+            "capture_id": matched["id"],
+            "snippet": (matched["content"] or "")[:_PIN_SNIPPET_CHARS],
+            "similarity": 1.0,
+        }
+    ] + hits
+
+
+def build_context(query: str) -> list[dict]:
+    """Everything the LLM will see for this question under SINGLE-SHOT
+    retrieval: hybrid search (chunks + graph nodes), then — for enumeration
+    questions about a label-matched document — that document's graph memories
+    read directly and prepended, then the sparse-representation pin. The
+    agentic loop (retrieval.agent) composes these same primitives across
+    multiple rounds; this function remains the non-agentic baseline and the
+    seam the retrieval-quality suite exercises."""
+    hits = _memory_hits(query)
+    matched = _match_document(query)
+    matched = dict(matched) if matched else None
+    if matched and _wants_enumeration(query):
+        # The named document's own facts LEAD the context — off-topic
+        # captures ranked mid-pack must not crowd or bury them.
+        hits = _document_scope_hits(matched, hits) + hits
+    return _apply_document_pin(hits, matched)

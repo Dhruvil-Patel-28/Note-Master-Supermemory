@@ -84,7 +84,7 @@ def _require_live_memory():
 
 
 def _context(query: str) -> tuple[str, int]:
-    from app.routes.chat import build_context
+    from app.retrieval.context import build_context
 
     hits = build_context(query)
     return "\n".join(h["snippet"] for h in hits).lower(), len(hits)
@@ -112,7 +112,7 @@ def test_retrieval_quality(case):
 
 def test_assembly_budget_respected():
     """Every assembled context must stay inside the LLM budget."""
-    from app.routes.chat import _CONTEXT_BUDGET, build_context
+    from app.retrieval.context import _CONTEXT_BUDGET, build_context
 
     for case in CASES:
         if case.get("empty"):
