@@ -109,18 +109,15 @@ def _slot_sort_key(r: dict) -> tuple[int, float]:
 
 
 def _memory_hits(query: str) -> list[dict]:
-    """Retrieve from supermemory: chunk hits grouped per capture, capped at the
-    top captures, with a v1-style context budget so duplicated uploads can't
-    starve the LLM context. Disabled/unreachable memory degrades to an empty
-    hit list (honest not-found, no local stack).
-
-    Memory nodes (the agent's graph memories) are deduped by text and grounded
-    against the capture's stored content: a memory node that shares no
-    substantive token with its capture's real content is cross-attached junk
-    (the agent mirrors other docs' content into unrelated fact docs) and is
-    dropped."""
+    """Retrieve from the knowledge backend. In chromadb mode: embed query →
+    nearest-neighbour search → format as hits. In supermemory mode: hybrid
+    search (chunks + graph nodes) grouped per capture with filters."""
     if not settings.memory_enabled:
         return []
+
+    if settings.knowledge_backend == "chromadb":
+        return _vector_hits(query)
+
     try:
         results = get_client().search(query, limit=_MEMORY_LIMIT, threshold=0.0)
     except Exception:
@@ -153,9 +150,56 @@ def _memory_hits(query: str) -> list[dict]:
                 "capture_id": cid,
                 "snippet": r["content"],
                 "similarity": r["similarity"],
-                # Provenance: raw-text chunks vs the agent's graph fact nodes —
-                # both arrive mixed in one hybrid search response.
                 "source": "hybrid-chunk" if r.get("kind") == "chunk" else "graph-memory",
+            })
+            budget -= len(r["content"])
+        if budget <= 0:
+            break
+    return hits
+
+
+def _vector_hits(query: str) -> list[dict]:
+    """ChromaDB path: embed query → search → group per capture with slots."""
+    from ..embeddings.provider import embed
+    from .vector_store import search
+
+    q_vec = embed([query])[0]
+    results = search(q_vec, k=30)
+    if not results:
+        return []
+    per_capture: dict[int, list[dict]] = {}
+    for r in results:
+        if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
+            continue
+        cid = r["capture_id"]
+        per_capture.setdefault(cid, []).append({
+            "content": r["snippet"],
+            "kind": "chunk",
+            "metadata": {"capture_id": str(cid)},
+            "similarity": r["similarity"],
+        })
+    if not per_capture:
+        return []
+    slots = (
+        _MEMORY_CHUNKS_PER_CAPTURE_ENUM
+        if _wants_enumeration(query)
+        else _MEMORY_CHUNKS_PER_CAPTURE
+    )
+    hits: list[dict] = []
+    budget = _CONTEXT_BUDGET
+    for cid in sorted(
+        per_capture,
+        key=lambda c: max(x["similarity"] for x in per_capture[c]),
+        reverse=True,
+    )[:_MEMORY_TOP_CAPTURES]:
+        for r in sorted(per_capture[cid], key=_slot_sort_key)[:slots]:
+            if budget <= 0:
+                break
+            hits.append({
+                "capture_id": cid,
+                "snippet": r["content"],
+                "similarity": r["similarity"],
+                "source": "vector-chunk",
             })
             budget -= len(r["content"])
         if budget <= 0:
@@ -218,14 +262,10 @@ def _memory_grounded(capture_id: int, text: str) -> bool:
 
 
 def _document_scope_hits(matched: dict, existing: list[dict]) -> list[dict]:
-    """Comprehensive fact retrieval for enumeration questions ("which are the
-    3 projects in my resume"). Search — hybrid or scoped — ranks globally by
-    query similarity, so a document's individual facts score mid-pack against
-    every other capture and fall below any slot cut. Instead of searching,
-    READ the document's graph memories directly: documents-list gives this
-    capture's doc ids, memories-list gives every node attached to them. No
-    ranking lottery; the content pin below stays as the fallback when the
-    graph is empty or unreachable."""
+    """Scoped graph read — only available in supermemory mode (no graph in
+    chromadb mode). Returns [] gracefully so the agent loop skips it."""
+    if settings.knowledge_backend == "chromadb":
+        return []
     try:
         client = get_client()
         doc_ids = {

@@ -31,7 +31,7 @@ def base_env(monkeypatch):
     from app.retrieval import context as ctx
 
     monkeypatch.setattr(
-        ctx, "settings", SimpleNamespace(memory_enabled=True), raising=False
+        ctx, "settings", SimpleNamespace(memory_enabled=True, knowledge_backend="supermemory"), raising=False
     )
     monkeypatch.setattr(ctx, "_memory_hits", lambda q: [])
     monkeypatch.setattr(ctx, "_match_document", lambda q: None)

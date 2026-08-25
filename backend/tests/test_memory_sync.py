@@ -34,7 +34,7 @@ class FakeClient:
 
 def _enable_memory(monkeypatch):
     monkeypatch.setattr(
-        memsync, "settings", SimpleNamespace(memory_enabled=True, memory_container_tag="user_main")
+        memsync, "settings", SimpleNamespace(memory_enabled=True, memory_container_tag="user_main", knowledge_backend="supermemory")
     )
     client = FakeClient()
     monkeypatch.setattr(memsync, "get_client", lambda: client)

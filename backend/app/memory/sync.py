@@ -6,7 +6,6 @@ import time
 from .. import db
 from ..config import settings
 from .client import get_client
-
 logger = logging.getLogger(__name__)
 
 # Re-entrant: sync_capture calls forget_capture internally. Serializes
@@ -69,15 +68,16 @@ def _sweep_custom_id_docs(client, capture_id: int) -> list[str]:
 
 
 def forget_capture(capture_id: int) -> None:
-    """Delete all supermemory docs owned by a capture (best-effort).
-
-    Called on capture delete, edit re-ingest, version demotion. Deletes the
-    stored doc ids first, then sweeps by customId prefix so nothing owned by
-    this capture survives even when bookkeeping was lost."""
+    """Delete all knowledge-store docs owned by a capture (best-effort)."""
     if not settings.memory_enabled:
         return
     with _SYNC_LOCK:
         try:
+            if settings.knowledge_backend == "chromadb":
+                from ..retrieval.vector_store import delete_by_capture
+                delete_by_capture(capture_id)
+                return
+
             with db.get_conn() as conn:
                 row = conn.execute(
                     "SELECT memory_doc_ids FROM captures WHERE id = ?", (capture_id,)
@@ -91,6 +91,23 @@ def forget_capture(capture_id: int) -> None:
             _sweep_custom_id_docs(client, capture_id)
         except Exception as exc:
             logger.warning("memory forget failed for capture %s: %s", capture_id, exc)
+
+
+def _sync_chromadb(capture_id: int, row) -> None:
+    """ChromaDB sync path: chunk → embed → upsert."""
+    from ..ingestion.chunker import chunk as do_chunk
+    from ..embeddings.provider import embed
+    from ..retrieval.vector_store import upsert, count
+
+    raw = _memory_text(row)
+    if not raw:
+        return
+    chunks = [c["text"] for c in do_chunk(raw)]
+    if not chunks:
+        return
+    vectors = embed(chunks)
+    stored = upsert(capture_id, chunks, vectors)
+    logger.info("chromadb sync: capture %d → %d chunks (store total: %d)", capture_id, stored, count())
 
 
 def _custom_id(capture_id: int, slot: str) -> str:
@@ -175,6 +192,15 @@ def sync_capture(capture_id: int) -> None:
 
             raw = _memory_text(row)
             doc_ids: list[str] = []
+            if settings.knowledge_backend == "chromadb":
+                _sync_chromadb(capture_id, row)
+                with db.get_conn() as conn:
+                    conn.execute(
+                        "UPDATE captures SET memory_doc_ids = ? WHERE id = ?",
+                        ("chromadb-synced", capture_id),
+                    )
+                return
+
             if raw:
                 base_custom = _custom_id(capture_id, "raw")
                 segments = _segment_content(raw)

@@ -228,7 +228,7 @@ class TestMemoryHitSelection:
         monkeypatch.setattr(chat_route, "_filter_memory_results", lambda r: r)
         monkeypatch.setattr(chat_route, "_memory_hits", _real_memory_hits)
         monkeypatch.setattr(
-            chat_route, "settings", SimpleNamespace(memory_enabled=True), raising=False
+            chat_route, "settings", SimpleNamespace(memory_enabled=True, knowledge_backend="supermemory"), raising=False
         )
         return chat_route._memory_hits(query)
 
@@ -341,7 +341,7 @@ class TestSourceTagging:
         monkeypatch.setattr(chat_route, "get_client", lambda: fake_client)
         monkeypatch.setattr(chat_route, "_filter_memory_results", lambda r: r)
         monkeypatch.setattr(
-            chat_route, "settings", SimpleNamespace(memory_enabled=True), raising=False
+            chat_route, "settings", SimpleNamespace(memory_enabled=True, knowledge_backend="supermemory"), raising=False
         )
         monkeypatch.setattr(chat_route, "_memory_hits", _real_memory_hits)
         out = chat_route._memory_hits("my projects")

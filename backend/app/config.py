@@ -18,6 +18,7 @@ class Settings:
     memory_url: str = os.getenv("MEMORY_URL", "http://127.0.0.1:6767")
     memory_api_key: str = os.getenv("MEMORY_API_KEY", "")
     memory_container_tag: str = os.getenv("MEMORY_CONTAINER_TAG", "user_main")
+    knowledge_backend: str = os.getenv("KNOWLEDGE_BACKEND", "supermemory")
 
     @property
     def db_path(self) -> Path:
