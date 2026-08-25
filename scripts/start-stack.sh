@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Start the full Note Master stack (idempotent — safe to re-run anytime):
-#   1. supermemory-server   :6767 (Gemini-profile memory agent)
-#   2. FastAPI backend      :8000 (with Langfuse tracing when keys exist)
-#   3. Next.js frontend     :3000
+# Manual stack control — NOTHING auto-starts at login/reboot.
 #
-# Env wiring:
+#   scripts/start-stack.sh          # start supermemory + backend + frontend
+#   scripts/start-stack.sh stop     # stop all three
+#
+# Nothing here runs unless you invoke it. Langfuse is separate:
+#   scripts/run-langfuse.sh up|down
+#
+# Env wiring when starting:
 #   - Langfuse keys sourced from ~/.supermemory/langfuse-keys if present
 #   - supermemory API key from ~/.supermemory/api-key
 #
@@ -14,6 +17,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 port_up() { nc -z 127.0.0.1 "$1" >/dev/null 2>&1; }
+
+stop_all() {
+  pkill -f "uvicorn app.main" 2>/dev/null || true
+  pkill -f "run-supermemory.sh" 2>/dev/null || true
+  pkill -f "supermemory-server" 2>/dev/null || true
+  pkill -f "next dev" 2>/dev/null || true
+  sleep 1
+  for port in 6767 8000 3000; do
+    port_up $port && echo "  :$port still up ❌" || echo "  :$port stopped ✅"
+  done
+}
+
+if [ "${1:-up}" = "stop" ]; then
+  stop_all
+  exit 0
+fi
 
 # --- supermemory -----------------------------------------------------------
 if port_up 6767; then
@@ -47,3 +66,4 @@ else
 fi
 
 echo "stack ready ✅  (app: http://localhost:3000 · langfuse: http://localhost:3001)"
+echo "stop everything with: scripts/start-stack.sh stop"

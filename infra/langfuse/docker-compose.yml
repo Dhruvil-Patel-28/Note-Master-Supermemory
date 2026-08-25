@@ -11,7 +11,7 @@ services:
   langfuse-db:
     image: postgres:16-alpine
     container_name: langfuse-db
-    restart: unless-stopped
+    restart: "no"
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: langfuse
@@ -27,7 +27,7 @@ services:
   langfuse:
     image: langfuse/langfuse:2
     container_name: langfuse
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       langfuse-db:
         condition: service_healthy
