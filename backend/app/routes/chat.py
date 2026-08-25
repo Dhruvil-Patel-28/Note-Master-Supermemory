@@ -214,6 +214,7 @@ def chat(payload: ChatRequest):
     trace.score(name="found", value=1 if found else 0)
     trace.score(name="rounds_used", value=len(outcome.rounds))
     trace.score(name="grounded_pass", value=1 if (found or not hits) else 0)
+    tracer.flush()
 
     return ChatResponse(
         answer=answer,

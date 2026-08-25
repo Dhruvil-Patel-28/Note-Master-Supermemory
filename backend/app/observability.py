@@ -5,6 +5,9 @@ default http://localhost:3001) to enable; without keys every trace/span
 call is a cheap no-op object, so the system never depends on Langfuse
 being up. All data stays local when LANGFUSE_HOST points at the
 self-hosted stack.
+
+SDK note: pinned to langfuse 2.x to match the self-hosted v2 server — the
+v3 SDK's client fails validating against v2 server responses.
 """
 import logging
 import os
@@ -22,10 +25,12 @@ class _NoopSpan:
     def end(self, **kw):
         return self
 
-
-class _NoopTrace(_NoopSpan):
     def score(self, *a, **kw):
         return self
+
+
+class _NoopTrace(_NoopSpan):
+    pass
 
 
 class Tracer:
@@ -50,10 +55,12 @@ class Tracer:
             from langfuse import Langfuse
 
             self._lf = Langfuse(public_key=pk, secret_key=sk, host=host)
+            self._lf.auth_check()  # fail fast on bad keys/host
             self.enabled = True
             logger.info("langfuse tracing enabled (%s)", host)
         except Exception as exc:
             logger.warning("langfuse unavailable (%s) — tracing disabled", exc)
+            self._lf = None
 
     def trace(self, name: str, input=None, metadata=None, session_id=None):
         self._init()
