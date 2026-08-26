@@ -9,6 +9,7 @@ from ..retrieval.agent import run_rag_agent
 from ..retrieval.chat import NOT_FOUND_ANSWER, grounded_answer, scrub_injection
 from ..retrieval.context import (
     _label_score,
+    _match_document,
     _query_words,
     _stem,
     _STOPWORDS,
@@ -155,10 +156,17 @@ def chat(payload: ChatRequest):
     if intent in ("code", "general"):
         # A "general" verdict that actually names one of your documents is a
         # misclassification — questions about an uploaded book read like
-        # world-knowledge questions about a published work. A label match on
-        # a real capture overrides the verdict and proceeds to retrieval.
+        # world-knowledge questions about a published work.
+        # In chromadb (vector-only) mode, general-intent questions still go
+        # through retrieval + grounding: irrelevant ones score below the floor
+        # and return honest not-found, so the pre-gate isn't needed.
         doc_match = _match_document(query)
-        if not (intent == "general" and doc_match):
+        override = (
+            intent == "general" and (
+                doc_match or settings.knowledge_backend == "chromadb"
+            )
+        )
+        if not override:
             with db.get_conn() as conn:
                 conn.execute(
                     "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
@@ -171,8 +179,8 @@ def chat(payload: ChatRequest):
                 found=False,
                 sources=[],
             )
-        ovr = trace.span(name="intent override", output={"general->notes": "label-matched document"})
-        ovr.end(output={"capture_id": doc_match["id"]})
+        ovr = trace.span(name="intent override", output={"general->notes": str(bool(doc_match))})
+        ovr.end(output={"capture_id": doc_match["id"] if doc_match else None})
 
     outcome = run_rag_agent(query, trace=trace)
     hits = outcome.hits

@@ -94,7 +94,7 @@ def forget_capture(capture_id: int) -> None:
 
 
 def _sync_chromadb(capture_id: int, row) -> None:
-    """ChromaDB sync path: chunk → embed → upsert."""
+    """ChromaDB sync path: chunk → filter → embed → upsert."""
     from ..ingestion.chunker import chunk as do_chunk
     from ..embeddings.provider import embed
     from ..retrieval.vector_store import upsert, count
@@ -102,12 +102,17 @@ def _sync_chromadb(capture_id: int, row) -> None:
     raw = _memory_text(row)
     if not raw:
         return
-    chunks = [c["text"] for c in do_chunk(raw)]
+    all_chunks = [c["text"] for c in do_chunk(raw)]
+    # Filter whitespace-only/trivially-small chunks — they pollute vector
+    # search by scoring mid-range similarity against EVERY query despite
+    # carrying zero information.
+    chunks = [c for c in all_chunks if len(c.strip()) >= 20]
     if not chunks:
+        logger.warning("chromadb sync: capture %d produced 0 non-empty chunks (of %d)", capture_id, len(all_chunks))
         return
     vectors = embed(chunks)
     stored = upsert(capture_id, chunks, vectors)
-    logger.info("chromadb sync: capture %d → %d chunks (store total: %d)", capture_id, stored, count())
+    logger.info("chromadb sync: capture %d → %d/%d chunks (store total: %d)", capture_id, stored, len(all_chunks), count())
 
 
 def _custom_id(capture_id: int, slot: str) -> str:
