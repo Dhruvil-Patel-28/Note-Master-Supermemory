@@ -68,12 +68,19 @@ class ShowDocument(BaseModel):
     filename: Optional[str] = None
 
 
+class Artifact(BaseModel):
+    kind: str = "html"
+    title: str
+    content: str
+
+
 class ChatResponse(BaseModel):
     answer: str
     found: bool
     sources: list[ChatSource]
     structured: Optional[StructuredAnswer] = None
     show_document: Optional[ShowDocument] = None
+    artifact: Optional[Artifact] = None
 
 
 class AuditEntry(BaseModel):

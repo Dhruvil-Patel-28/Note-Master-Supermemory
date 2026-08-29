@@ -6,16 +6,23 @@ from .. import db
 from ..config import settings
 from ..observability import tracer
 from ..retrieval.agent import run_rag_agent
-from ..retrieval.chat import NOT_FOUND_ANSWER, grounded_answer, scrub_injection
+from ..retrieval.chat import (
+    NOT_FOUND_ANSWER,
+    generate_canvas,
+    grounded_answer,
+    scrub_injection,
+)
 from ..retrieval.context import (
     _label_score,
     _match_document,
     _query_words,
     _stem,
     _STOPWORDS,
+    build_context,
 )
 from ..retrieval.intent import REFUSAL_ANSWER, _USER_REFERENCE_RE, classify as classify_intent
 from ..schemas import (
+    Artifact,
     ChatRequest,
     ChatResponse,
     ChatSource,
@@ -129,10 +136,29 @@ def _grounded(query: str, answer: str, hits: list[dict]) -> bool:
 
 @router.post("", response_model=ChatResponse)
 def chat(payload: ChatRequest):
-    query = scrub_injection(payload.query)
+    if scrub_injection(payload.query):
+        with db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
+                (payload.query, "", 0),
+            )
+        trace = tracer.trace(
+            name="chat",
+            input={"query": payload.query},
+            session_id="note-master",
+        )
+        trace.update(output={"refusal": "injection"})
+        trace.score(name="found", value=0)
+        tracer.flush()
+        return ChatResponse(
+            answer=REFUSAL_ANSWER,
+            found=False,
+            sources=[],
+        )
+    query = payload.query
     trace = tracer.trace(
         name="chat",
-        input={"query": payload.query},
+        input={"query": query},
         session_id="note-master",
     )
     # A scrubbed query that is empty or only directives ("tell me", "answer")
@@ -141,7 +167,7 @@ def chat(payload: ChatRequest):
         with db.get_conn() as conn:
             conn.execute(
                 "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
-                (payload.query, "", 0),
+                (query, "", 0),
             )
         trace.update(output={"refusal": "empty-after-scrub"})
         trace.score(name="found", value=0)
@@ -182,8 +208,43 @@ def chat(payload: ChatRequest):
         ovr = trace.span(name="intent override", output={"general->notes": str(bool(doc_match))})
         ovr.end(output={"capture_id": doc_match["id"] if doc_match else None})
 
-    outcome = run_rag_agent(query, trace=trace)
-    hits = outcome.hits
+    hits = build_context(query)
+
+    # ── CREATE INTENT: generate HTML artifact from retrieved facts ──
+    if intent == "create":
+        gen_span = trace.span(name="canvas generation", model=settings.ollama_model,
+                              input={"query": query, "hits": len(hits)})
+        if not hits:
+            trace.update(output={"refusal": "create:no-facts"})
+            trace.score(name="found", value=0)
+            return ChatResponse(
+                answer="I couldn't find relevant facts in your notes to build that. Upload more documents or try a different request.",
+                found=False,
+                sources=[],
+            )
+        try:
+            artifact = generate_canvas(query, hits)
+        except Exception as exc:
+            raise HTTPException(status_code=502,
+                                detail=f"canvas generation failed: {exc}") from exc
+        gen_span.end(output={"title": artifact["title"], "kind": artifact["kind"]})
+        trace.update(output={"artifact": artifact["title"]})
+        trace.score(name="found", value=1)
+        tracer.flush()
+        source_ids = [h["capture_id"] for h in hits]
+        tiers = _sensitivity_tiers(source_ids)
+        with db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (query, retrieved_source_ids, sensitive_access) VALUES (?, ?, ?)",
+                (payload.query, ",".join(str(c) for c in source_ids),
+                 1 if any(t == "high" for t in tiers.values()) else 0),
+            )
+        return ChatResponse(
+            answer=f"Built '{artifact['title']}' from your notes — opening preview.",
+            found=True,
+            sources=[],
+            artifact=Artifact(**artifact),
+        )
 
     gen_span = trace.span(
         name="generation",
@@ -228,7 +289,6 @@ def chat(payload: ChatRequest):
     gen_span.end(output={"answer": answer[:400], "found": found, "structured": structured is not None})
     trace.update(output={"answer": answer[:200], "found": found})
     trace.score(name="found", value=1 if found else 0)
-    trace.score(name="rounds_used", value=len(outcome.rounds))
     # grounded_pass=1 whenever nothing ungrounded reached the user — an
     # honest not-found IS the guardrail succeeding.
     trace.score(name="grounded_pass", value=1 if not (found and not _grounded(query, answer, hits)) else 0)

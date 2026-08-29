@@ -13,8 +13,9 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
-import { api, Capture, ChatResponse, ChatSource, ShowDocument } from "@/lib/api";
+import { api, Artifact, Capture, ChatResponse, ChatSource, ShowDocument } from "@/lib/api";
 import Markdown from "@/components/markdown";
+import ArtifactPanel from "@/components/ArtifactPanel";
 import FeedbackDialog from "@/components/feedback-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +43,7 @@ interface Message {
   sources?: ChatResponse["sources"];
   structured?: ChatResponse["structured"];
   sensitive?: boolean;
+  artifact?: Artifact;
 }
 
 function newMessageId(): string {
@@ -268,6 +270,7 @@ export default function ChatPane({
   const [busy, setBusy] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<Message | null>(null);
   const [preview, setPreview] = useState<ShowDocument | null>(null);
+  const [activeArtifact, setActiveArtifact] = useState<Artifact | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -295,10 +298,14 @@ export default function ChatPane({
           sources: res.sources,
           structured: res.structured ?? undefined,
           sensitive: res.sources.some((s) => s.sensitivity_tier !== "none"),
+          artifact: res.artifact ?? undefined,
         },
       ]);
       if (res.show_document) {
         setPreview(res.show_document);
+      }
+      if (res.artifact) {
+        setActiveArtifact(res.artifact);
       }
     } catch (e) {
       setMessages((m) => [
@@ -311,68 +318,81 @@ export default function ChatPane({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="flex flex-col space-y-4 p-4">
-          {messages.map((m) =>
-            m.role === "user" ? (
-              <div
-                key={m.id}
-                className="max-w-[85%] self-end rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground"
-              >
-                {m.text}
+    <div className="flex min-h-0 flex-1">
+      {/* Main chat column */}
+      <div className={cn("flex min-h-0 flex-1 flex-col", activeArtifact && "border-r md:w-[45%]")}>
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+          <div className="flex flex-col space-y-4 p-4">
+            {messages.map((m) =>
+              m.role === "user" ? (
+                <div
+                  key={m.id}
+                  className="max-w-[85%] self-end rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground"
+                >
+                  {m.text}
+                </div>
+              ) : m.role === "error" ? (
+                <div
+                  key={m.id}
+                  className="max-w-[85%] self-start rounded-2xl rounded-tl-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                >
+                  {m.text}
+                </div>
+              ) : (
+                <AssistantMessage
+                  key={m.id}
+                  m={m}
+                  captures={captures}
+                  onSourceClick={(id) => onSourceClick?.(id)}
+                  onOpenFile={(id) => onOpenFile?.(id)}
+                  onFlag={(msg) => setFeedbackMsg(msg)}
+                />
+              )
+            )}
+            {busy && (
+              <div className="flex items-center gap-2 self-start text-sm text-muted-foreground">
+                <RotateCw className="size-3.5 animate-spin" /> Thinking…
               </div>
-            ) : m.role === "error" ? (
-              <div
-                key={m.id}
-                className="max-w-[85%] self-start rounded-2xl rounded-tl-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              >
-                {m.text}
-              </div>
-            ) : (
-              <AssistantMessage
-                key={m.id}
-                m={m}
-                captures={captures}
-                onSourceClick={(id) => onSourceClick?.(id)}
-                onOpenFile={(id) => onOpenFile?.(id)}
-                onFlag={(msg) => setFeedbackMsg(msg)}
-              />
-            )
-          )}
-          {busy && (
-            <div className="flex items-center gap-2 self-start text-sm text-muted-foreground">
-              <RotateCw className="size-3.5 animate-spin" /> Thinking…
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
-      <div className="flex items-center gap-2 border-t p-3">
-        <Input
-          placeholder="Ask your notes…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              ask();
-            }
+        <div className="flex items-center gap-2 border-t p-3">
+          <Input
+            placeholder="Ask your notes…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                ask();
+              }
+            }}
+            className="flex-1"
+          />
+          <Button size="icon" disabled={busy || !query.trim()} onClick={() => ask()} aria-label="Ask">
+            <Send />
+          </Button>
+        </div>
+        <FeedbackDialog
+          open={feedbackMsg !== null}
+          onOpenChange={(open) => {
+            if (!open) setFeedbackMsg(null);
           }}
-          className="flex-1"
+          query={feedbackMsg?.query ?? ""}
+          captureIds={dedupeSources(feedbackMsg?.sources ?? []).map((s) => s.capture_id)}
         />
-        <Button size="icon" disabled={busy || !query.trim()} onClick={() => ask()} aria-label="Ask">
-          <Send />
-        </Button>
+        {preview && <DocumentPreview doc={preview} onOpenChange={(o) => { if (!o) setPreview(null); }} />}
       </div>
-      <FeedbackDialog
-        open={feedbackMsg !== null}
-        onOpenChange={(open) => {
-          if (!open) setFeedbackMsg(null);
-        }}
-        query={feedbackMsg?.query ?? ""}
-        captureIds={dedupeSources(feedbackMsg?.sources ?? []).map((s) => s.capture_id)}
-      />
-      {preview && <DocumentPreview doc={preview} onOpenChange={(o) => { if (!o) setPreview(null); }} />}
+      
+      {/* Artifact preview panel — slides in when active */}
+      {activeArtifact && (
+        <div className="hidden min-h-0 flex-1 md:flex">
+          <ArtifactPanel
+            artifact={activeArtifact}
+            onClose={() => setActiveArtifact(null)}
+          />
+        </div>
+      )}
     </div>
   );
 }

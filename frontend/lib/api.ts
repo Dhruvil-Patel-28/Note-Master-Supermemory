@@ -39,12 +39,19 @@ export interface ShowDocument {
   filename: string | null;
 }
 
+export interface Artifact {
+  kind: string;
+  title: string;
+  content: string;
+}
+
 export interface ChatResponse {
   answer: string;
   found: boolean;
   sources: ChatSource[];
   structured?: StructuredAnswer | null;
   show_document?: ShowDocument | null;
+  artifact?: Artifact | null;
 }
 
 export interface AuditEntry {
