@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from .. import db
 from ..config import settings
 from ..observability import tracer
-from ..retrieval.agent import run_rag_agent
+from ..retrieval.agent import AGENTIC_ENABLED, run_rag_agent
 from ..retrieval.chat import (
     NOT_FOUND_ANSWER,
     generate_canvas,
@@ -143,9 +143,8 @@ def chat(payload: ChatRequest):
                 (payload.query, "", 0),
             )
         trace = tracer.trace(
-            name="chat",
+            name=f"chat (injection blocked)",
             input={"query": payload.query},
-            session_id="note-master",
         )
         trace.update(output={"refusal": "injection"})
         trace.score(name="found", value=0)
@@ -157,9 +156,8 @@ def chat(payload: ChatRequest):
         )
     query = payload.query
     trace = tracer.trace(
-        name="chat",
+        name=f"chat: {query[:60]}",
         input={"query": query},
-        session_id="note-master",
     )
     # A scrubbed query that is empty or only directives ("tell me", "answer")
     # has nothing to answer — refuse deterministically before any model call.
@@ -208,7 +206,18 @@ def chat(payload: ChatRequest):
         ovr = trace.span(name="intent override", output={"general->notes": str(bool(doc_match))})
         ovr.end(output={"capture_id": doc_match["id"] if doc_match else None})
 
-    hits = build_context(query)
+    if AGENTIC_ENABLED:
+        agent_span = trace.span(name="rag-agent", model=settings.ollama_model,
+                                input={"query": query})
+        outcome = run_rag_agent(query, trace=trace)
+        hits = outcome.hits
+        agent_span.end(output={
+            "rounds": len(outcome.rounds),
+            "hits": len(hits),
+            "forced_scope": outcome.forced_scope,
+        })
+    else:
+        hits = build_context(query)
 
     # ── CREATE INTENT: generate HTML artifact from retrieved facts ──
     if intent == "create":
@@ -249,7 +258,8 @@ def chat(payload: ChatRequest):
     gen_span = trace.span(
         name="generation",
         model=settings.ollama_model,
-        input={"hits": len(hits), "show_doc_intent": bool(_document_intent(query))},
+        input={"hits": len(hits), "show_doc_intent": bool(_document_intent(query)),
+               "agent_rounds": len(outcome.rounds) if AGENTIC_ENABLED else 0},
     )
     show_doc = _find_document(query, hits)
     if show_doc:

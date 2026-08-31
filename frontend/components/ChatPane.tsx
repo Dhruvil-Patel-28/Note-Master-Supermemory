@@ -185,16 +185,17 @@ function AssistantMessage({
         )}
         {m.sources && m.sources.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {dedupeSources(m.sources).map((s) => {
+            {dedupeSources(m.sources).map((s, idx) => {
               const cap = captures.find((c) => c.id === s.capture_id);
               return (
-                <SourceChip
-                  key={s.capture_id}
-                  s={s}
-                  hasFile={cap?.type === "doc" && !!cap.raw_content_ref}
-                  onClick={() => onSourceClick(s.capture_id)}
-                  onOpenFile={() => onOpenFile(s.capture_id)}
-                />
+                <span key={s.capture_id} id={`source-chip-${idx}`}>
+                  <SourceChip
+                    s={s}
+                    hasFile={cap?.type === "doc" && !!cap.raw_content_ref}
+                    onClick={() => onSourceClick(s.capture_id)}
+                    onOpenFile={() => onOpenFile(s.capture_id)}
+                  />
+                </span>
               );
             })}
           </div>

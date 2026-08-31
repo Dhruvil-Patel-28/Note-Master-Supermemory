@@ -175,7 +175,11 @@ def run_eval(label="default"):
 
 
 def _push_to_langfuse(label: str, results: list[dict]):
-    """Push golden dataset + eval scores to Langfuse Datasets tab."""
+    """Push eval results as tagged traces to Langfuse for comparison.
+
+    Each question becomes a trace tagged with the model label.
+    Compare models in Traces tab: filter by tag 'eval' then sort by label.
+    """
     try:
         from langfuse import Langfuse
         lf = Langfuse(
@@ -188,48 +192,33 @@ def _push_to_langfuse(label: str, results: list[dict]):
         print(f"  langfuse push skipped ({e})")
         return
 
-    # Create or get the dataset
-    from .golden_dataset import EVAL_DOCS
-    try:
-        dataset = lf.create_dataset(name="agentic-rag-eval")
-        for doc in EVAL_DOCS:
-            dataset.create_item(
-                input={"filename": doc["filename"], "content": doc["content"][:500]},
-                expected_output={"note": doc["note"]},
-            )
-        print("  langfuse: created dataset 'agentic-rag-eval'")
-    except Exception:
-        dataset = lf.get_dataset("agentic-rag-eval")
+    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    passed_count = 0
 
-    # Create a dataset run for this label
-    run_name = f"eval-{label}"
-    try:
-        run = lf.create_dataset_run(
-            name=run_name,
-            dataset_id=dataset.id,
-            model_id=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
-        )
-        print(f"  langfuse: created run '{run_name}'")
-    except Exception as e:
-        print(f"  langfuse: run creation skipped ({e})")
-        return
-
-    # Log per-question scores
-    passed_count = sum(r["passed"] for r in results)
     for i, r in enumerate(results):
         try:
-            lf.score(
-                trace_id=r.get("trace_id", f"eval-{label}-{i}"),
-                name="eval_passed",
-                value=1 if r["passed"] else 0,
-                data_type="NUMERIC",
-                comment=f"[{r.get('category','')}] {r['question'][:80]} | {r.get('issues','')}",
+            trace = lf.trace(
+                name=f"eval [{r.get('category','')}] {r['question'][:50]}",
+                input={"question": r["question"], "category": r.get("category", "")},
+                output={"answer": r.get("answer", ""), "passed": r["passed"]},
+                tags=["eval", label, r.get("category", "")],
+                metadata={
+                    "model": model,
+                    "label": label,
+                    "latency_s": r.get("latency_s", 0),
+                    "issues": r.get("issues", ""),
+                },
             )
+            trace.score(name="eval_passed", value=1 if r["passed"] else 0)
+            trace.score(name="latency", value=r.get("latency_s", 0))
+            if r["passed"]:
+                passed_count += 1
         except Exception:
             pass
 
     lf.flush()
-    print(f"  langfuse: pushed {len(results)} scores + summary ({passed_count}/{len(results)} passed)")
+    print(f"  langfuse: pushed {len(results)} traces tagged '{label}' ({passed_count}/{len(results)} passed)")
+    print(f"  langfuse: compare in Traces → filter by tag 'eval' → sort by tag '{label}'")
 
 
 if __name__ == "__main__":

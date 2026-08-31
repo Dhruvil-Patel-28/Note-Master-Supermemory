@@ -1,11 +1,7 @@
-# Self-hosted Langfuse (v2 line) — single web container + Postgres.
-# Chosen over the v3 microservice stack (clickhouse/redis/minio/worker) to
-# stay light on a 16GB Mac that also runs Ollama models. Traces never leave
-# this machine. UI: http://localhost:3001
-#
-# The backend picks up keys from LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY /
-# LANGFUSE_HOST (see backend/app/observability.py). Create keys in the UI:
-# sign up -> Settings -> API Keys, then export them before starting uvicorn.
+# Self-hosted Langfuse v2 — single web container + Postgres.
+# Chosen over the v4 microservice stack (clickhouse/redis/minio/worker) to
+# stay light on a 16GB Mac that also runs Ollama models.
+# UI: http://localhost:3001
 
 services:
   langfuse-db:
@@ -39,7 +35,6 @@ services:
       NEXTAUTH_SECRET: langfuse-local-dev-secret-change-me
       SALT: langfuse-local-dev-salt-change-me
       TELEMETRY_ENABLED: "false"
-      # No SMTP in local mode — first signup is open on localhost only.
 
 volumes:
   langfuse-pgdata:

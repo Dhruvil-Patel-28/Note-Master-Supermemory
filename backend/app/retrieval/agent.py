@@ -22,7 +22,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ..config import settings
-from ..observability import get_prompt
+from ..observability import get_prompt, tracer
 from . import context as ctx
 from .chat import _client
 
@@ -79,10 +79,12 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).lower().strip()
 
 
-def _grade(query: str, pool: list[dict]) -> dict:
+def _grade(query: str, pool: list[dict], trace=None) -> dict:
     """Schema-constrained sufficiency verdict from the agent model. Any
     failure fails OPEN (treated as sufficient) so a broken grader degrades to
     single-shot behavior instead of blocking answers."""
+    grade_span = trace.span(name="grade", model=AGENT_MODEL,
+                            input={"pool_size": len(pool)}) if trace else None
     digest_parts = []
     for h in pool[:8]:
         digest_parts.append(f"[c{h['capture_id']}] {_norm(h['snippet'])[:130]}")
@@ -105,10 +107,15 @@ def _grade(query: str, pool: list[dict]) -> dict:
         )
         verdict = json.loads(response["message"]["content"])
         if isinstance(verdict, dict) and "sufficient" in verdict:
+            if grade_span:
+                grade_span.end(output=verdict)
             return verdict
     except Exception as exc:
         logger.warning("grader failed (%s) — treating pool as sufficient", exc)
-    return {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False}
+    fallback = {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False}
+    if grade_span:
+        grade_span.end(output=fallback, metadata={"fallback": True})
+    return fallback
 
 
 def _breakdown(hits: list[dict]) -> dict:
@@ -184,7 +191,7 @@ def run_rag_agent(query: str, trace=None) -> AgentOutcome:
         if round_no == MAX_ROUNDS:
             break
 
-        verdict = _grade(query, pool)
+        verdict = _grade(query, pool, trace=trace)
         outcome.rounds[-1].verdict = verdict
         if sp:
             gsp = span(f"grade round {round_no}", input={"pool": len(pool)})
