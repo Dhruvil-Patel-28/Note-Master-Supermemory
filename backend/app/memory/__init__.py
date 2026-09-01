@@ -1,3 +1,3 @@
-from .client import MemoryClient, get_client
+from .sync import forget_capture, sync_capture
 
-__all__ = ["MemoryClient", "get_client"]
+__all__ = ["forget_capture", "sync_capture"]

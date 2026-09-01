@@ -164,7 +164,7 @@ def update_capture(capture_id: int, payload: CaptureUpdateIn, background: Backgr
     if content is not None:
         schedule_ingest(background, capture_id)
     # SENSITIVE-FACTS (OPT2): dormant — re-tiering to high used to schedule the
-    # identity-fact extraction here; supermemory retrieval handles it now.
+    # identity-fact extraction here; vector retrieval handles it now.
     # elif tier == "high" and row["sensitivity_tier"] != "high":
     #     schedule_sensitive_facts(background, capture_id)
     return _to_out(_get_capture(capture_id))

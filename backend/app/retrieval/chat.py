@@ -162,13 +162,29 @@ def _parse_response(raw: str) -> tuple[str, bool, dict | None]:
 
 
 def _filter_fields(fields: list[dict], context: str) -> list[dict]:
-    kept = []
+    """Dedupe fields, drop any whose key doesn't appear in the retrieved
+    context — the small model invents list items (courses it never took) when
+    asked to enumerate, and the key is the most checkable part — and drop
+    key==value repeats: for definitional questions the model mirrors the
+    fields shape and emits the concept as both key and value."""
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+    ctx = _norm(context)
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
     for f in fields:
-        key = f["key"].lower()
-        val = f["value"].lower()
-        if key in context.lower() or val in context.lower():
-            kept.append(f)
-    return kept
+        key = _norm(f.get("key", ""))
+        value = str(f.get("value", "")).strip()
+        if not key or (key, value) in seen:
+            continue
+        seen.add((key, value))
+        value_norm = _norm(value)
+        if value_norm == key or value_norm.startswith(key + " "):
+            continue
+        if key in ctx:
+            out.append({"key": f["key"], "value": value})
+    return out
 
 
 def _wants_enumeration(query: str) -> bool:

@@ -1,10 +1,10 @@
 """Structured facts for high-tier (sensitive) captures — extracted ONCE at
 ingest from the extracted text with the local 3b model, stored locally in
-`captures.sensitive_facts` (never mirrored to supermemory, by design: the
-knowledge layer must not hold PAN/Aadhaar-adjacent data).
+`captures.sensitive_facts` (never mirrored to the vector store, by design:
+the knowledge layer must not hold PAN/Aadhaar-adjacent data).
 
 DORMANT (OPT2): nothing imports this module since identity moved to
-supermemory retrieval. Revive together with the SENSITIVE-FACTS blocks in
+vector retrieval. Revive together with the SENSITIVE-FACTS blocks in
 tasks.py and routes/chat.py.
 
 The extraction is best-effort: any failure yields an empty dict (ingestion

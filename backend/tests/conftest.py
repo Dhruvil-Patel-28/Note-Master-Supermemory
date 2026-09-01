@@ -40,10 +40,8 @@ def make_tiny_epub(tmp_path, body="The user's favorite book is The Hobbit by Tol
         )
     return path
 # The hermetic suite disables memory; the @memory run overrides this to "1"
-# via scripts/run-memory-tests.sh. All test-process writes go to a dedicated
-# container so the user's real data (user_main) is never touched.
+# via scripts/run-memory-tests.sh (.e2e against the real vector store).
 os.environ.setdefault("MEMORY_ENABLED", "0")
-os.environ.setdefault("MEMORY_CONTAINER_TAG", "nm_test")
 
 
 @pytest.fixture()
@@ -65,9 +63,9 @@ def db():
 
 @pytest.fixture(autouse=True)
 def memory_hits(monkeypatch, request):
-    """Route-level retrieval seam: the chat route reads supermemory, but tests
-    must stay hermetic (no server, no real embeddings). Substitute a fake that
-    returns only captures whose content shares a word with the query
+    """Route-level retrieval seam: the chat route reads the vector store, but
+    tests must stay hermetic (no server, no real embeddings). Substitute a fake
+    that returns only captures whose content shares a word with the query
     (plural-stemmed; academic queries — semester/credit/cgpa/grade/course/
     transcript — always match, transcripts label semesters with bare
     digits/romans so lexical overlap fails there), each at similarity 0.5; a
@@ -76,7 +74,7 @@ def memory_hits(monkeypatch, request):
     all-captures context made the 3b answer from noise.
 
     @memory and @retrieval tests bypass this fake entirely — they exercise the
-    real _memory_hits against a live supermemory-server."""
+    real retrieval path against a live store."""
     if request.node.get_closest_marker("memory") or request.node.get_closest_marker(
         "retrieval"
     ):
@@ -108,8 +106,8 @@ def memory_hits(monkeypatch, request):
             ).fetchall()
         content_rows = [(r["id"], r["content"] or "") for r in rows]
         # Academic queries always match: transcripts label semesters with bare
-        # digits/romans, so lexical overlap fails — supermemory's semantic
-        # recall covers these in reality. Only the matched captures are
+        # digits/romans, so lexical overlap fails — the real embedder covers
+        # these in reality. Only the matched captures are
         # returned (real retrieval would rank them above unrelated notes; an
         # all-captures context makes the 3b answer from noise).
         matched = [r for r in content_rows if qwords & words(r[1])]

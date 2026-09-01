@@ -181,15 +181,13 @@ def chat(payload: ChatRequest):
         # A "general" verdict that actually names one of your documents is a
         # misclassification — questions about an uploaded book read like
         # world-knowledge questions about a published work.
-        # In chromadb (vector-only) mode, general-intent questions still go
+        # In the vector-only mode, general-intent questions still go
         # through retrieval + grounding: irrelevant ones score below the floor
         # and return honest not-found, so the pre-gate isn't needed.
         doc_match = _match_document(query)
-        override = (
-            intent == "general" and (
-                doc_match or settings.knowledge_backend == "chromadb"
-            )
-        )
+        # In the vector-only mode, general-intent questions flow through
+        # retrieval+grounding below; "code" intent is always refused.
+        override = intent == "general"
         if not override:
             with db.get_conn() as conn:
                 conn.execute(

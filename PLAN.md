@@ -3,12 +3,12 @@
 **Status:** Draft for approval
 **Version:** 0.1
 
-> **v3 amendment:** the storage architecture below reflects original v1 planning.
-> As of v3 ("general ingestion"), retrieval/knowledge lives entirely in
-> supermemory-server (raw-content docs + its memory agent's graph); the local
-> FTS5/vector/graph runtimes were retired in Phase 4 and the deterministic fact
-> layer was removed in v3. The authoritative description of what actually ships
-> is `AGENTS.md`.
+> **v4 amendment:** the storage architecture below reflects original v1 planning.
+> As of v4 ("vector-only"), retrieval/knowledge lives entirely in a **local
+> ChromaDB vector store** (raw-content chunks + nomic embeddings, no graph, no
+> external server); the supermemory-server layer, the deterministic fact layer,
+> and the v1 FTS5/vector/graph runtimes were all retired. The authoritative
+> description of what actually ships is `AGENTS.md`.
 
 ---
 

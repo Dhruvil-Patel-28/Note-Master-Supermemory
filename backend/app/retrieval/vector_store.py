@@ -1,6 +1,6 @@
 """ChromaDB-backed vector store — the v4 knowledge layer.
 
-Replaces supermemory-server: we own upsert, search, and deletion.
+We own upsert, search, and deletion.
 Persists to disk (NOTE_MASTER_DATA_DIR/chromadb/). Each chunk carries
 metadata {capture_id, chunk_index} so retrieval can cite sources and
 deletion can scope by capture.
@@ -83,9 +83,8 @@ def delete_by_capture(capture_id: int) -> int:
 def reset() -> None:
     """Delete the entire collection (empty-store reset)."""
     global _collection
-    client = _get_collection()
-    col = _client.get_or_create_collection(name=_COLLECTION_NAME)
-    _client.delete_collection(_COLLECTION_NAME)
+    col = _get_collection()
+    _client.delete_collection(col.name)
     _collection = None
 
 

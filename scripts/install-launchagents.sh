@@ -4,10 +4,10 @@
 #   • restarts automatically if a service crashes
 #   • survives terminal/session closures
 #
-#   scripts/install-launchagents.sh          # write + load all three
-#   scripts/install-launchagents.sh stop     # unload all three
+#   scripts/install-launchagents.sh          # write + load backend + frontend
+#   scripts/install-launchagents.sh stop     # unload both
 #
-# Logs: /tmp/nm-supermemory.log /tmp/nm-backend.log /tmp/nm-frontend.log
+# Logs: /tmp/nm-backend.log /tmp/nm-frontend.log
 # Manual control: launchctl kickstart -k gui/$UID/com.notemaster.backend
 
 set -euo pipefail
@@ -36,27 +36,22 @@ PLIST
 }
 
 if [ "${1:-install}" = "stop" ]; then
-  for svc in supermemory backend frontend; do
+  for svc in backend frontend; do
     launchctl bootout gui/"$UID"/"$LABEL_PREFIX.$svc" 2>/dev/null || true
     echo "stopped $LABEL_PREFIX.$svc"
   done
   exit 0
 fi
 
-write_plist "$LABEL_PREFIX.supermemory" \
-  "\"$ROOT/scripts/run-supermemory.sh\"" \
-  "$ROOT" \
-  /tmp/nm-supermemory.log
-
-BACKEND_CMD="source \$HOME/.supermemory/langfuse-keys 2>/dev/null; \
-export MEMORY_API_KEY=\$(cat \$HOME/.supermemory/api-key 2>/dev/null | tr -d '[:space:]'); \
-export MEMORY_ENABLED=1 MEMORY_CONTAINER_TAG=user_main; \
+BACKEND_CMD="source \$HOME/.langfuse/keys 2>/dev/null; \
+export LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_HOST; \
+export MEMORY_ENABLED=1; \
 exec \$(command -v uv) run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
 write_plist "$LABEL_PREFIX.backend" "$BACKEND_CMD" "$ROOT/backend" /tmp/nm-backend.log
 
 write_plist "$LABEL_PREFIX.frontend" "exec npm run dev" "$ROOT/frontend" /tmp/nm-frontend.log
 
-for svc in supermemory backend frontend; do
+for svc in backend frontend; do
   launchctl bootout gui/"$UID"/"$LABEL_PREFIX.$svc" 2>/dev/null || true   # reload config
   launchctl bootstrap gui/"$UID" "$LA_DIR/$LABEL_PREFIX.$svc.plist"
   launchctl kickstart gui/"$UID"/"$LABEL_PREFIX.$svc" 2>/dev/null || true
@@ -64,7 +59,7 @@ done
 
 echo "waiting for services..."
 ok=1
-for port in 6767 8000 3000; do
+for port in 8000 3000; do
   up=0
   for i in $(seq 1 40); do nc -z 127.0.0.1 $port >/dev/null 2>&1 && up=1 && break; sleep 2; done
   [ "$up" = 1 ] && echo "  :$port ✅" || { echo "  :$port ❌"; ok=0; }

@@ -1,12 +1,12 @@
 """Unit tests for the agentic RAG loop — grader faked, retrieval primitives
-monkeypatched. Deterministic: no Ollama, no supermemory."""
+monkeypatched. Deterministic: no Ollama, no network."""
 import pytest
 from types import SimpleNamespace
 
 from app.retrieval import agent as agent_mod
 
 
-def _hit(cid, text, sim=0.5, source="graph-memory"):
+def _hit(cid, text, sim=0.5, source="vector-chunk"):
     return {"capture_id": cid, "snippet": text, "similarity": sim, "source": source}
 
 
@@ -17,11 +17,10 @@ class FakeGrader:
         self.verdicts = list(verdicts)
         self.calls = []
 
-    def __call__(self, query, pool):
+    def __call__(self, query, pool, **kw):
         self.calls.append(len(pool))
         v = self.verdicts.pop(0) if self.verdicts else {
             "sufficient": True, "missing_aspect": "", "suggested_query": "",
-            "need_document_scope": False,
         }
         return dict(v)
 
@@ -31,11 +30,11 @@ def base_env(monkeypatch):
     from app.retrieval import context as ctx
 
     monkeypatch.setattr(
-        ctx, "settings", SimpleNamespace(memory_enabled=True, knowledge_backend="supermemory"), raising=False
+        ctx, "settings", SimpleNamespace(memory_enabled=True), raising=False
     )
     monkeypatch.setattr(ctx, "_memory_hits", lambda q: [])
     monkeypatch.setattr(ctx, "_match_document", lambda q: None)
-    monkeypatch.setattr(ctx, "_document_scope_hits", lambda m, e: [])
+    monkeypatch.setattr(ctx, "_apply_document_pin", lambda h, m: h)
     return ctx
 
 
@@ -60,9 +59,9 @@ def test_insufficient_refines_then_answers(base_env, monkeypatch):
     monkeypatch.setattr(
         agent_mod, "_grade",
         FakeGrader(
-            {"sufficient": False, "missing_aspect": "more projects", 
-             "suggested_query": "cortex customer analytics", "need_document_scope": False},
-            {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False},
+            {"sufficient": False, "missing_aspect": "more projects",
+             "suggested_query": "cortex customer analytics"},
+            {"sufficient": True, "missing_aspect": "", "suggested_query": ""},
         ),
     )
     out = agent_mod.run_rag_agent("which are my projects")
@@ -90,21 +89,21 @@ class RecordingTrace:
 
 def test_span_reports_per_source_breakdown(base_env, monkeypatch):
     """Retrieval spans must expose new/pool hit counts broken down by
-    source (hybrid-chunk / graph-memory / scoped-graph / pin)."""
+    source (vector-chunk / pin)."""
     base_env._memory_hits = lambda q: (
-        [_hit(90, "The user built Glow Studio.", source="hybrid-chunk")]
+        [_hit(90, "The user built Glow Studio.", source="pin")]
         if "glow" in q.lower() or "projects" in q.lower()
         else [
-            _hit(90, "The user built Cortex Research AI.", source="scoped-graph"),
-            _hit(90, "The user built an AI-powered customer analytics platform.", source="graph-memory"),
+            _hit(90, "The user built Cortex Research AI.", source="vector-chunk"),
+            _hit(90, "The user built an AI-powered customer analytics platform.", source="vector-chunk"),
         ]
     )
     monkeypatch.setattr(
         agent_mod, "_grade",
         FakeGrader(
             {"sufficient": False, "missing_aspect": "more projects",
-             "suggested_query": "cortex customer analytics", "need_document_scope": False},
-            {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False},
+             "suggested_query": "cortex customer analytics"},
+            {"sufficient": True, "missing_aspect": "", "suggested_query": ""},
         ),
     )
     trace = RecordingTrace()
@@ -113,11 +112,11 @@ def test_span_reports_per_source_breakdown(base_env, monkeypatch):
     r_spans = [s for s in trace.spans if s["name"].startswith("retrieval round")]
     assert len(r_spans) == 2
     first_out = r_spans[0]["output"]
-    assert first_out["new_by_source"] == {"hybrid-chunk": 1}
+    assert first_out["new_by_source"] == {"pin": 1}
     second_out = r_spans[1]["output"]
-    assert second_out["new_by_source"] == {"scoped-graph": 1, "graph-memory": 1}
+    assert second_out["new_by_source"] == {"vector-chunk": 2}
     pool_bd = second_out["pool_by_source"]
-    assert pool_bd["hybrid-chunk"] == 1 and pool_bd["graph-memory"] >= 1
+    assert pool_bd["pin"] == 1 and pool_bd["vector-chunk"] == 2
 
 
 def test_max_rounds_held(base_env, monkeypatch):
@@ -129,7 +128,7 @@ def test_max_rounds_held(base_env, monkeypatch):
     base_env._memory_hits = lambda q: []
     grader = FakeGrader(*[
         {"sufficient": False, "missing_aspect": "x",
-         "suggested_query": f"q{i}", "need_document_scope": False}
+         "suggested_query": f"q{i}"}
         for i in range(10)
     ])
     monkeypatch.setattr(agent_mod, "_grade", grader)
@@ -145,7 +144,7 @@ def test_no_fresh_hits_stops_cleanly(base_env, monkeypatch):
     monkeypatch.setattr(
         agent_mod, "_grade",
         FakeGrader({"sufficient": False, "missing_aspect": "unknown",
-                    "suggested_query": "", "need_document_scope": False}),
+                    "suggested_query": ""}),
     )
     out = agent_mod.run_rag_agent("obscure question")
     assert len(out.rounds) == 1
@@ -163,8 +162,8 @@ def test_budget_held_across_rounds(base_env, monkeypatch):
         agent_mod, "_grade",
         FakeGrader(
             {"sufficient": False, "missing_aspect": "more",
-             "suggested_query": "second batch", "need_document_scope": False},
-            {"sufficient": True, "missing_aspect": "", "suggested_query": "", "need_document_scope": False},
+             "suggested_query": "second batch"},
+            {"sufficient": True, "missing_aspect": "", "suggested_query": ""},
         ),
     )
     out = agent_mod.run_rag_agent("question one")

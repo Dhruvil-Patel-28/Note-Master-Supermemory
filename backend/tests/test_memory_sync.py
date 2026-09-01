@@ -1,4 +1,4 @@
-"""Pure-logic tests for memory sync (mock client, no network)."""
+"""Pure-logic tests for ChromaDB sync (mock embed + vector store, no network)."""
 
 from types import SimpleNamespace
 
@@ -9,164 +9,94 @@ from app.memory import sync as memsync
 init_db()
 
 
-class FakeClient:
+class Recorder:
     def __init__(self):
-        self.docs = {}
-        self.deleted = []
+        self.upserted = []  # (capture_id, n_chunks) in order
+        self.deleted = []  # capture_ids deleted
 
-    def add_document(self, content, container_tag=None, metadata=None, custom_id=None):
-        doc_id = f"doc-{len(self.docs) + 1}"
-        self.docs[doc_id] = {
-            "content": content,
-            "metadata": metadata or {},
-            "custom_id": custom_id,
-        }
-        return doc_id
+    def upsert(self, capture_id, chunks, embeddings):
+        self.upserted.append((capture_id, len(chunks)))
+        return len(chunks)
 
-    def delete_document(self, doc_id):
-        self.deleted.append(doc_id)
-        self.docs.pop(doc_id, None)
-        return True
+    def delete_by_capture(self, capture_id):
+        self.deleted.append(capture_id)
+        return 1
 
-    def document_status(self, doc_id):
-        return "done" if doc_id in self.docs else None
+    def count(self):
+        return sum(n for _, n in self.upserted)
 
 
 def _enable_memory(monkeypatch):
+    monkeypatch.setattr(memsync, "settings", SimpleNamespace(memory_enabled=True))
+    rec = Recorder()
+    import app.retrieval.vector_store as vs
+
+    monkeypatch.setattr(vs, "upsert", rec.upsert)
+    monkeypatch.setattr(vs, "delete_by_capture", rec.delete_by_capture)
+    monkeypatch.setattr(vs, "count", rec.count)
+
+    import app.embeddings.provider as prov
+
     monkeypatch.setattr(
-        memsync, "settings", SimpleNamespace(memory_enabled=True, memory_container_tag="user_main", knowledge_backend="supermemory")
+        prov, "embed", lambda chunks: [[0.0] * 768 for _ in chunks]
     )
-    client = FakeClient()
-    monkeypatch.setattr(memsync, "get_client", lambda: client)
-    return client
+    return rec
 
 
-def test_sync_writes_single_raw_doc(monkeypatch):
-    client = _enable_memory(monkeypatch)
+def _insert(content, note, group, latest=1, sensitivity="none"):
     with db.get_conn() as conn:
         conn.execute(
             "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'i have to buy mangoes tomorrow', 'grocery', 'none', 9999, 1, 1, 'indexed')"
+            "VALUES ('text', ?, ?, ?, ?, ?, 1, 'indexed')",
+            (content, note, sensitivity, group, latest),
         )
-        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 9999").fetchone()[0]
+        cid = conn.execute(
+            "SELECT id FROM captures WHERE document_group_id = ? AND is_latest = ?",
+            (group, latest),
+        ).fetchone()[0]
+    return cid
+
+
+def test_sync_writes_chunks(monkeypatch):
+    rec = _enable_memory(monkeypatch)
+    cid = _insert("i have to buy mangoes tomorrow", "grocery", 9999)
     memsync.sync_capture(cid)
-    with db.get_conn() as conn:
-        row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
-    assert row["memory_doc_ids"]
-    ids = row["memory_doc_ids"].split(",")
-    # Raw-only sync: one doc per capture, no fact docs.
-    assert len(ids) == 1
-    raw = client.docs[ids[0]]
-    assert raw["custom_id"] == f"nm-{cid}-raw"
-    assert raw["metadata"]["kind"] == "raw"
-    assert raw["content"] == "grocery\ni have to buy mangoes tomorrow"
+    assert rec.upserted, "sync should upsert chunks"
+    assert rec.upserted[0][0] == cid
+    assert rec.upserted[0][1] >= 1
 
 
 def test_sync_writes_high_tier_like_any_other(monkeypatch):
-    client = _enable_memory(monkeypatch)
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'PAN ABCDE1234F', 'pan card', 'high', 8888, 1, 1, 'indexed')"
-        )
-        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 8888").fetchone()[0]
+    rec = _enable_memory(monkeypatch)
+    cid = _insert("PAN ABCDE1234F", "pan card", 8888, sensitivity="high")
     memsync.sync_capture(cid)
-    with db.get_conn() as conn:
-        row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
-    assert row["memory_doc_ids"] is not None
-    ids = row["memory_doc_ids"].split(",")
-    assert len(ids) == 1
-    assert client.docs[ids[0]]["content"] == "pan card\nPAN ABCDE1234F"
+    assert rec.upserted and rec.upserted[0][0] == cid
 
 
 def test_sync_forgets_demoted_siblings(monkeypatch):
-    client = _enable_memory(monkeypatch)
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'old version', NULL, 'none', 7777, 0, 1, 'indexed')"
-        )
-        old = conn.execute("SELECT id FROM captures WHERE document_group_id = 7777").fetchone()[0]
-        conn.execute(
-            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'new version', NULL, 'none', 7777, 1, 2, 'indexed')"
-        )
-        new = conn.execute("SELECT id FROM captures WHERE document_group_id = 7777 AND is_latest = 1").fetchone()[0]
-        conn.execute("UPDATE captures SET memory_doc_ids = 'old-a,old-b' WHERE id = ?", (old,))
+    rec = _enable_memory(monkeypatch)
+    old = _insert("old version", None, 7777, latest=0)
+    new = _insert("new version", None, 7777, latest=1)
     memsync.sync_capture(new)
-    assert set(client.deleted) == {"old-a", "old-b"}
-    with db.get_conn() as conn:
-        old_ids = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (old,)).fetchone()[0]
-    assert old_ids is None
+    assert old in rec.deleted
 
 
-def test_forget_deletes_stored_docs(monkeypatch):
-    client = _enable_memory(monkeypatch)
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'some content', NULL, 'none', 6666, 1, 1, 'indexed')"
-        )
-        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 6666").fetchone()[0]
-        conn.execute("UPDATE captures SET memory_doc_ids = 'a1,b2' WHERE id = ?", (cid,))
+def test_forget_deletes_chunks(monkeypatch):
+    rec = _enable_memory(monkeypatch)
+    cid = _insert("some content", None, 6666)
     memsync.forget_capture(cid)
-    assert set(client.deleted) == {"a1", "b2"}
-    with db.get_conn() as conn:
-        ids = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()[0]
-    assert ids is None
+    assert cid in rec.deleted
 
 
-def test_forget_sweeps_orphaned_custom_id_docs(monkeypatch):
-    """Regression: a delete during a slow agent run (or a lost memory_doc_ids
-    column) used to leave orphans behind. The customId-prefix sweep finds
-    everything the capture owns regardless of bookkeeping."""
-    client = _enable_memory(monkeypatch)
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'content with no stored doc ids', NULL, 'none', 70707, 1, 1, 'indexed')"
-        )
-        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 70707").fetchone()[0]
-    client.list_documents = lambda: [
-        {"id": "live-other", "customId": "nm-42-raw"},
-        {"id": "orphan-raw", "customId": f"nm-{cid}-raw"},
-        {"id": "orphan-fact", "customId": f"nm-{cid}-f0"},
-        {"id": "unrelated", "customId": "nm-9999-raw"},
-        {"id": "no-custom-id", "customId": None},
-    ]
-    memsync.forget_capture(cid)
-    # Only this capture's docs are swept — other captures' docs survive.
-    assert set(client.deleted) == {"orphan-raw", "orphan-fact"}
+def test_sync_is_noop_when_disabled(monkeypatch):
+    monkeypatch.setattr(memsync, "settings", SimpleNamespace(memory_enabled=False))
+    rec = Recorder()
+    import app.retrieval.vector_store as vs
 
-
-def test_sync_is_noop_when_disabled():
-    assert memsync.settings.memory_enabled is False
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO captures (type, content, note, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('text', 'content', NULL, 'none', 5555, 1, 1, 'indexed')"
-        )
-        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 5555").fetchone()[0]
+    monkeypatch.setattr(vs, "upsert", rec.upsert)
+    monkeypatch.setattr(vs, "delete_by_capture", rec.delete_by_capture)
+    monkeypatch.setattr(vs, "count", rec.count)
+    cid = _insert("content", None, 5555)
     memsync.sync_capture(cid)
-    with db.get_conn() as conn:
-        row = conn.execute("SELECT memory_doc_ids FROM captures WHERE id = ?", (cid,)).fetchone()
-    assert row["memory_doc_ids"] is None
-
-def test_sync_segments_large_content(monkeypatch):
-    """Novel-length content splits into nm-{id}-raw-0..N docs so each gets a
-    full memory-agent pass (the agent reads only a bounded window per call)."""
-    client = _enable_memory(monkeypatch)
-    big = ("Para one.\n\n" + "word " * 200) * 700  # ~1.5M chars -> ~19 segments of 80k
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO captures (type, content, sensitivity_tier, document_group_id, is_latest, version_number, status) "
-            "VALUES ('doc', ?, 'none', 60606, 1, 1, 'indexed')",
-            (big,),
-        )
-        cid = conn.execute("SELECT id FROM captures WHERE document_group_id = 60606").fetchone()[0]
-    memsync.sync_capture(cid)
-    ids = [i for i in client.docs if client.docs[i]["custom_id"].startswith(f"nm-{cid}-raw")]
-    assert len(ids) >= 5
-    customs = sorted(client.docs[i]["custom_id"] for i in ids)
-    assert customs[0] == f"nm-{cid}-raw-0"
-    assert all(client.docs[i]["metadata"]["capture_id"] == str(cid) for i in ids)
+    assert rec.upserted == []
+    assert rec.deleted == []

@@ -36,7 +36,6 @@ def init_db() -> None:
         for col, ddl in {
             "original_filename": "ALTER TABLE captures ADD COLUMN original_filename TEXT",
             "note": "ALTER TABLE captures ADD COLUMN note TEXT",
-            "memory_doc_ids": "ALTER TABLE captures ADD COLUMN memory_doc_ids TEXT",
             "sensitive_facts": "ALTER TABLE captures ADD COLUMN sensitive_facts TEXT",
         }.items():
             try:

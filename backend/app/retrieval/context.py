@@ -1,4 +1,5 @@
-"""Retrieval core: everything that assembles LLM context from supermemory.
+"""Retrieval core: everything that assembles LLM context from the local
+ChromaDB vector store.
 
 Extracted from routes/chat.py so the HTTP layer keeps only guardrails and
 transport concerns, and so the agentic loop (retrieval.agent) can compose
@@ -9,9 +10,7 @@ import re
 
 from .. import db
 from ..config import settings
-from ..memory.client import get_client
 
-_MEMORY_LIMIT = 40
 _MEMORY_TOP_CAPTURES = 5
 _MEMORY_CHUNKS_PER_CAPTURE = 4
 # Enumeration questions ("which are the 3 projects", "how many courses") need
@@ -26,7 +25,7 @@ _MIN_FULL_CHUNK_CHARS = 250
 # reached the context; below that, the pin injects fuller content.
 _SPARSE_REPRESENTATION_CHARS = 800
 _PIN_SNIPPET_CHARS = 4000
-# Honest not-found protection: supermemory ranks EVERY doc for any query
+# Honest not-found protection: dense retrieval ranks EVERY chunk for any query
 # (threshold 0), so out-of-vocabulary questions ("do i own a zebra") would
 # drag unrelated chunks — including a high-tier PAN note — into the top-5 and
 # gate an innocent query. The floor is set below the observed relevant band.
@@ -114,53 +113,11 @@ def _slot_sort_key(r: dict) -> tuple[int, float]:
 
 
 def _memory_hits(query: str) -> list[dict]:
-    """Retrieve from the knowledge backend. In chromadb mode: embed query →
-    nearest-neighbour search → format as hits. In supermemory mode: hybrid
-    search (chunks + graph nodes) grouped per capture with filters."""
+    """Retrieve from the local ChromaDB vector store: embed query →
+    nearest-neighbour search → group per capture with slots."""
     if not settings.memory_enabled:
         return []
-
-    if settings.knowledge_backend == "chromadb":
-        return _vector_hits(query)
-
-    try:
-        results = get_client().search(query, limit=_MEMORY_LIMIT, threshold=0.0)
-    except Exception:
-        return []
-    per_capture: dict[int, list[dict]] = {}
-    for r in _filter_memory_results(results):
-        try:
-            cid = int(r["metadata"].get("capture_id", ""))
-        except (TypeError, ValueError):
-            continue
-        per_capture.setdefault(cid, []).append(r)
-    if not per_capture:
-        return []
-    slots = (
-        _MEMORY_CHUNKS_PER_CAPTURE_ENUM
-        if _wants_enumeration(query)
-        else _MEMORY_CHUNKS_PER_CAPTURE
-    )
-    hits: list[dict] = []
-    budget = _CONTEXT_BUDGET
-    for cid in sorted(
-        per_capture,
-        key=lambda c: max(x["similarity"] for x in per_capture[c]),
-        reverse=True,
-    )[:_MEMORY_TOP_CAPTURES]:
-        for r in sorted(per_capture[cid], key=_slot_sort_key)[:slots]:
-            if budget <= 0:
-                break
-            hits.append({
-                "capture_id": cid,
-                "snippet": r["content"],
-                "similarity": r["similarity"],
-                "source": "hybrid-chunk" if r.get("kind") == "chunk" else "graph-memory",
-            })
-            budget -= len(r["content"])
-        if budget <= 0:
-            break
-    return hits
+    return _vector_hits(query)
 
 
 def _vector_hits(query: str) -> list[dict]:
@@ -236,95 +193,12 @@ def _vector_hits(query: str) -> list[dict]:
     return hits
 
 
-def _filter_memory_results(results: list[dict]) -> list[dict]:
-    """Dedupe results by normalized text and drop cross-attached memory nodes
-    (the agent mirrors other docs' content into unrelated fact docs — e.g. the
-    transcript's course memory copied onto a "buy batteries" note). Keeps the
-    first result per text; memory-kind results are grounded against their
-    capture's real content; chunk results are real content and always pass."""
-    seen_texts: set[str] = set()
-    out: list[dict] = []
-    for r in results:
-        if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
-            continue
-        text = re.sub(r"\s+", " ", r["content"]).lower().strip()
-        if text in seen_texts:
-            continue
-        seen_texts.add(text)
-        if r.get("kind") == "memory" and not _memory_grounded(int(r["metadata"].get("capture_id", 0) or 0), text):
-            continue
-        out.append(r)
-    return out
-
-
 def _stem(w: str) -> str:
     """Trivial plural fold so grounding matches 'projects' against 'project'
     (and vice versa) without letting genuine '-ss/-us' words collapse."""
     if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
         return w[:-1]
     return w
-
-
-def _memory_grounded(capture_id: int, text: str) -> bool:
-    """True if a memory node's text shares at least one substantive token with
-    the capture's stored content. Cross-attached agent memories (transcript
-    facts mirrored onto "buy batteries" notes) share nothing and are dropped;
-    genuine paraphrases of the capture share tokens."""
-    try:
-        with db.get_conn() as conn:
-            row = conn.execute(
-                "SELECT content FROM captures WHERE id = ?", (capture_id,)
-            ).fetchone()
-    except Exception:
-        return True
-    if not row or not row["content"]:
-        return False
-    mwords = {
-        _stem(w) for w in re.findall(r"[a-z0-9]{3,}", text) if w not in _STOPWORDS
-    }
-    cwords = {
-        _stem(w)
-        for w in re.findall(r"[a-z0-9]{3,}", row["content"].lower())
-        if w not in _STOPWORDS
-    }
-    return bool(mwords & cwords)
-
-
-def _document_scope_hits(matched: dict, existing: list[dict]) -> list[dict]:
-    """Scoped graph read — only available in supermemory mode (no graph in
-    chromadb mode). Returns [] gracefully so the agent loop skips it."""
-    if settings.knowledge_backend == "chromadb":
-        return []
-    try:
-        client = get_client()
-        doc_ids = {
-            d["id"]
-            for d in client.list_documents()
-            if str((d.get("metadata") or {}).get("capture_id", "")) == str(matched["id"])
-        }
-        if not doc_ids:
-            return []
-        seen = {re.sub(r"\s+", " ", h["snippet"]).lower().strip() for h in existing}
-        used = sum(len(h["snippet"]) for h in existing)
-        room = max(0, _CONTEXT_BUDGET - used)
-        out: list[dict] = []
-        for m in client.list_memories():
-            if not (set(m.get("documentIds") or []) & doc_ids):
-                continue
-            text = (m.get("memory") or "").strip()
-            if not text:
-                continue
-            norm = re.sub(r"\s+", " ", text).lower().strip()
-            if norm in seen or len(text) > room:
-                continue
-            if not _memory_grounded(matched["id"], norm):
-                continue
-            seen.add(norm)
-            room -= len(text)
-            out.append({"capture_id": matched["id"], "snippet": text, "similarity": 0.6, "source": "scoped-graph"})
-        return out
-    except Exception:
-        return []
 
 
 def _apply_document_pin(hits: list[dict], matched: dict | None) -> list[dict]:
@@ -351,17 +225,12 @@ def _apply_document_pin(hits: list[dict], matched: dict | None) -> list[dict]:
 
 def build_context(query: str) -> list[dict]:
     """Everything the LLM will see for this question under SINGLE-SHOT
-    retrieval: hybrid search (chunks + graph nodes), then — for enumeration
-    questions about a label-matched document — that document's graph memories
-    read directly and prepended, then the sparse-representation pin. The
-    agentic loop (retrieval.agent) composes these same primitives across
+    retrieval: vector search over ChromaDB chunks, then the sparse-
+    representation pin guarantees a label-matched document is represented.
+    The agentic loop (retrieval.agent) composes these same primitives across
     multiple rounds; this function remains the non-agentic baseline and the
     seam the retrieval-quality suite exercises."""
     hits = _memory_hits(query)
     matched = _match_document(query)
     matched = dict(matched) if matched else None
-    if matched and _wants_enumeration(query):
-        # The named document's own facts LEAD the context — off-topic
-        # captures ranked mid-pack must not crowd or bury them.
-        hits = _document_scope_hits(matched, hits) + hits
     return _apply_document_pin(hits, matched)

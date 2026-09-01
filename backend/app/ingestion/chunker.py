@@ -1,4 +1,4 @@
-"""Text chunking — we own this now (supermemory used to do it internally).
+"""Text chunking — we own this now (the vector store indexes our chunks).
 
 Chunk size, overlap, and split strategy directly affect retrieval quality
 and are eval dimensions. Env-configurable via CHUNK_SIZE / CHUNK_OVERLAP.

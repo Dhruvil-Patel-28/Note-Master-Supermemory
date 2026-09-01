@@ -1,10 +1,10 @@
-"""Retrieval-quality battery against the LIVE user_main store (marker:
+"""Retrieval-quality battery against the LIVE local ChromaDB store (marker:
 retrieval). Asserts ONLY on context assembly — the facts that reach the LLM —
 never on model answers, so weak-model wording can never mask a retrieval
 regression and a future model upgrade inherits a provably solid layer.
 
-  - run via scripts/run-retrieval-tests.sh (MEMORY_ENABLED=1, user_main)
-  - skips cleanly when supermemory-server is unreachable
+  - run via scripts/run-retrieval-tests.sh (MEMORY_ENABLED=1)
+  - skips cleanly when the local vector store is empty/unreachable
   - read-only over the store: no captures are created or deleted
 
 Cases encode expected facts per question; failures print exactly which facts
@@ -75,12 +75,15 @@ CASES = [
 @pytest.fixture(scope="module", autouse=True)
 def _require_live_memory():
     from app.config import settings
-    from app.memory.client import get_client
+    from app.retrieval import vector_store as vs
 
     if not settings.memory_enabled:
         pytest.skip("MEMORY_ENABLED != 1 — run via scripts/run-retrieval-tests.sh")
-    if not get_client().healthy():
-        pytest.skip("supermemory-server not reachable on 127.0.0.1:6767")
+    try:
+        if vs.count() == 0:
+            pytest.skip("local ChromaDB store is empty — index captures first")
+    except Exception:
+        pytest.skip("local ChromaDB store unreachable")
 
 
 def _context(query: str) -> tuple[str, int]:
