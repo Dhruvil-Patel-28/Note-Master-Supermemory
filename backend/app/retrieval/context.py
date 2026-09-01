@@ -4,6 +4,7 @@ Extracted from routes/chat.py so the HTTP layer keeps only guardrails and
 transport concerns, and so the agentic loop (retrieval.agent) can compose
 these primitives directly. Behavior is identical to the pre-extraction code.
 """
+import os
 import re
 
 from .. import db
@@ -29,7 +30,11 @@ _PIN_SNIPPET_CHARS = 4000
 # (threshold 0), so out-of-vocabulary questions ("do i own a zebra") would
 # drag unrelated chunks — including a high-tier PAN note — into the top-5 and
 # gate an innocent query. The floor is set below the observed relevant band.
-MIN_MEMORY_SIMILARITY = 0.45
+MIN_MEMORY_SIMILARITY = float(os.getenv("MIN_MEMORY_SIMILARITY", "0.38"))
+# Chunks whose text is majority whitespace (table/script formatting dumps) are
+# near-zero information yet rank artificially high — tiny stage directions and
+# empty table cells score above real content on unrelated queries. Drop them.
+_MAX_WHITESPACE_RATIO = 0.6
 
 _STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
@@ -164,13 +169,37 @@ def _vector_hits(query: str) -> list[dict]:
     from .vector_store import search
 
     q_vec = embed([query])[0]
-    results = search(q_vec, k=30)
+    # Pull a generous candidate pool — ChromaDB's similarity scale here is
+    # compressed (real answers can sit at 0.38-0.45, below whitespace noise at
+    # 0.5), so a small k would drop the answer before dedup/filtering runs.
+    results = search(q_vec, k=100)
     if not results:
         return []
-    per_capture: dict[int, list[dict]] = {}
+    # Dedupe near-identical chunks first: the same note content is frequently
+    # uploaded as N separate captures (each is_latest, own group), so without
+    # this a single note floods every per-capture slot and nothing else — the
+    # invoice, directory, catalog — ever surfaces. Keep the best-scoring copy
+    # of each unique normalized text.
+    seen_text: dict[str, dict] = {}
     for r in results:
         if r.get("similarity", 0.0) < MIN_MEMORY_SIMILARITY:
             continue
+        snippet = r["snippet"]
+        if not snippet:
+            continue
+        # Drop whitespace-dominated formatting dumps (tables/scripts) — they
+        # rank above real content but carry ~zero information.
+        ws = sum(1 for c in snippet if c.isspace()) / len(snippet)
+        if ws > _MAX_WHITESPACE_RATIO:
+            continue
+        norm = re.sub(r"\s+", " ", snippet).strip().lower()
+        if not norm:
+            continue
+        prev = seen_text.get(norm)
+        if prev is None or r["similarity"] > prev["similarity"]:
+            seen_text[norm] = r
+    per_capture: dict[int, list[dict]] = {}
+    for r in seen_text.values():
         cid = r["capture_id"]
         per_capture.setdefault(cid, []).append({
             "content": r["snippet"],

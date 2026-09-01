@@ -105,10 +105,19 @@ def _sync_chromadb(capture_id: int, row) -> None:
     all_chunks = [c["text"] for c in do_chunk(raw)]
     # Filter whitespace-only/trivially-small chunks — they pollute vector
     # search by scoring mid-range similarity against EVERY query despite
-    # carrying zero information.
-    chunks = [c for c in all_chunks if len(c.strip()) >= 20]
+    # carrying zero information. Also drop majority-whitespace formatting
+    # dumps (script/table fragments) at the source so they never compete for
+    # candidate-pool slots at query time.
+    def _keep(c: str) -> bool:
+        if len(c.strip()) < 20:
+            return False
+        if sum(1 for ch in c if ch.isspace()) / len(c) > 0.6:
+            return False
+        return True
+
+    chunks = [c for c in all_chunks if _keep(c)]
     if not chunks:
-        logger.warning("chromadb sync: capture %d produced 0 non-empty chunks (of %d)", capture_id, len(all_chunks))
+        logger.warning("chromadb sync: capture %d produced 0 clean chunks (of %d)", capture_id, len(all_chunks))
         return
     vectors = embed(chunks)
     stored = upsert(capture_id, chunks, vectors)
